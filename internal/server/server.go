@@ -71,6 +71,9 @@ type Server struct {
 
 	// schedulerHandler handles scheduler REST API endpoints.
 	schedulerHandler *scheduler.Handler
+
+	// scheduler is the cron-based job scheduler.
+	scheduler *scheduler.Scheduler
 }
 
 // New creates a new Server.
@@ -137,7 +140,8 @@ func New(
 	}
 	if schedStore != nil {
 		runner := scheduler.NewRunner(schedStore)
-		s.schedulerHandler = scheduler.NewHandler(schedStore, runner)
+		s.scheduler = scheduler.New(schedStore, runner)
+		s.schedulerHandler = scheduler.NewHandler(schedStore, runner, s.scheduler)
 	}
 
 	for _, opt := range opts {
@@ -895,6 +899,10 @@ func localInterfaceIPs() map[string]bool {
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe() error {
+	// Start the cron scheduler when the server starts serving.
+	if s.scheduler != nil {
+		s.scheduler.Start()
+	}
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
 	srv := &http.Server{
 		Addr:        addr,
@@ -915,8 +923,13 @@ func (s *Server) ListenAndServe() error {
 	return srv.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the HTTP server.
+// Shutdown gracefully shuts down the HTTP server and the
+// cron scheduler.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.scheduler != nil {
+		s.scheduler.Stop()
+	}
+
 	s.mu.RLock()
 	srv := s.httpSrv
 	s.mu.RUnlock()

@@ -15,11 +15,12 @@ import (
 type Handler struct {
 	store  *Store
 	runner *Runner
+	sched  *Scheduler
 }
 
 // NewHandler creates a new Handler backed by the given Store.
-func NewHandler(store *Store, runner *Runner) *Handler {
-	return &Handler{store: store, runner: runner}
+func NewHandler(store *Store, runner *Runner, sched *Scheduler) *Handler {
+	return &Handler{store: store, runner: runner, sched: sched}
 }
 
 var validIDPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
@@ -105,6 +106,11 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, h.store.Get(job.ID))
+
+	// Reload cron entry for the new job.
+	if h.sched != nil {
+		h.sched.Reload(job.ID)
+	}
 }
 
 // UpdateJob handles PUT /api/v1/scheduler/jobs/{id}
@@ -173,6 +179,11 @@ func (h *Handler) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, h.store.Get(id))
+
+	// Reload cron entry with updated job.
+	if h.sched != nil {
+		h.sched.Reload(id)
+	}
 }
 
 // DeleteJob handles DELETE /api/v1/scheduler/jobs/{id}
@@ -188,6 +199,11 @@ func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+
+	// Remove cron entry for deleted job.
+	if h.sched != nil {
+		h.sched.Reload(id)
+	}
 }
 
 // EnableJob handles POST /api/v1/scheduler/jobs/{id}/enable
@@ -282,6 +298,11 @@ func (h *Handler) setEnabled(w http.ResponseWriter, id string, enabled bool) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.store.Get(id))
+
+	// Reload cron entry with updated enabled state.
+	if h.sched != nil {
+		h.sched.Reload(id)
+	}
 }
 
 func validateJobInput(id, name, cron, agent, prompt, spawnMode string) error {
