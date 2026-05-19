@@ -67,6 +67,9 @@ type Server struct {
 	// under this prefix and a <base href> tag is injected
 	// into the SPA's index.html.
 	basePath string
+
+	// schedulerHandler handles scheduler REST API endpoints.
+	schedulerHandler *scheduler.Handler
 }
 
 // New creates a new Server.
@@ -111,6 +114,16 @@ func New(
 		spaFS:      dist,
 		spaHandler: http.FileServerFS(dist),
 	}
+
+	// Initialize scheduler store and handler.
+	// Failure to read/create schedules.json is non-fatal;
+	// the scheduler just returns empty lists.
+	if schedStore, err := scheduler.NewStore(cfg.DataDir); err == nil {
+		s.schedulerHandler = scheduler.NewHandler(schedStore)
+	} else {
+		log.Printf("scheduler: %v (scheduler disabled)", err)
+	}
+
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -332,6 +345,38 @@ func (s *Server) routes() {
 		"GET /api/v1/assets/{filename}",
 		s.handleGetAsset,
 	)
+
+	// Scheduler API routes (only when schedulerHandler is initialized).
+	if s.schedulerHandler != nil {
+		s.mux.Handle(
+			"GET /api/v1/scheduler/jobs",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.ListJobs)),
+		)
+		s.mux.Handle(
+			"GET /api/v1/scheduler/jobs/{id}",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.GetJob)),
+		)
+		s.mux.Handle(
+			"POST /api/v1/scheduler/jobs",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.CreateJob)),
+		)
+		s.mux.Handle(
+			"PUT /api/v1/scheduler/jobs/{id}",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.UpdateJob)),
+		)
+		s.mux.Handle(
+			"DELETE /api/v1/scheduler/jobs/{id}",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.DeleteJob)),
+		)
+		s.mux.Handle(
+			"POST /api/v1/scheduler/jobs/{id}/enable",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.EnableJob)),
+		)
+		s.mux.Handle(
+			"POST /api/v1/scheduler/jobs/{id}/disable",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.DisableJob)),
+		)
+	}
 
 	// SPA fallback: serve embedded frontend
 	// Do not use timeout handler for static assets to avoid buffering.
