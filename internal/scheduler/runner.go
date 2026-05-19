@@ -52,8 +52,72 @@ func (r *Runner) Run(job *Job) *RunResult {
 		log.Printf("scheduler: create run entry: %v", err)
 	}
 
-	result := &RunResult{RunID: runID}
+	// Check for cmux spawn mode.
+	if job.SpawnMode == "cmux" {
+		r.runCmux(job, run)
+		log.Printf("scheduler: job %q run %s launched via cmux", job.ID, runID)
+		return &RunResult{RunID: runID, Status: "running"}
+	}
 
+	// Default: subprocess mode (synchronous, blocks until complete).
+	r.runSubprocess(job, run)
+	log.Printf("scheduler: job %q run %s finished", job.ID, runID)
+	return &RunResult{RunID: runID, Status: run.Status}
+}
+
+// runCmux spawns a job via cmux, creating a visible terminal window.
+// It writes a run entry to the database but cannot track completion
+// since the pi process runs in a separate window.
+func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
+	// Check if cmux is available.
+	cmuxPath, err := exec.LookPath("cmux")
+	if err != nil {
+		log.Printf("scheduler: cmux not found, falling back to subprocess for job %q", job.ID)
+		r.runSubprocess(job, run)
+		return
+	}
+
+	// Build the command string for the new window.
+	// cmux new-window -n "{id}" "cd {dir} && pi ..."
+	piArgs := []string{}
+	if !job.InheritProjectContext {
+		piArgs = append(piArgs, "--no-project-context")
+	}
+	if job.Model != "" {
+		piArgs = append(piArgs, "--model", job.Model)
+	}
+	piArgs = append(piArgs, job.Prompt)
+
+	piCmd := "pi"
+	for _, a := range piArgs {
+		piCmd += " " + a
+	}
+
+	windowCmd := piCmd
+	if job.WorkingDir != "" {
+		windowCmd = "cd " + job.WorkingDir + " && " + piCmd
+	}
+
+	cmd := exec.Command(cmuxPath, "new-window", "-n", job.ID, windowCmd)
+	if err := cmd.Start(); err != nil {
+		log.Printf("scheduler: cmux spawn failed for job %q: %v, falling back to subprocess", job.ID, err)
+		// Update run entry to record the failure before fallback.
+		run.Status = "failed"
+		if uErr := r.store.UpdateRun(run.ID, "failed", -1, err.Error()); uErr != nil {
+			log.Printf("scheduler: update run %s: %v", run.ID, uErr)
+		}
+		r.runSubprocess(job, run)
+		return
+	}
+
+	// cmux spawn succeeded — fire-and-forget.
+	// The pi session will be picked up by the existing sync pipeline.
+	log.Printf("scheduler: cmux window launched for job %q", job.ID)
+}
+
+// runSubprocess spawns a job as a subprocess with output capture,
+// timeout handling, and run history tracking.
+func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	// Build command.
 	args := []string{}
 	if !job.InheritProjectContext {
@@ -94,9 +158,9 @@ func (r *Runner) Run(job *Job) *RunResult {
 			}
 		}
 
-		status := "completed"
+		run.Status = "completed"
 		if exitCode != 0 {
-			status = "failed"
+			run.Status = "failed"
 		}
 
 		errMsg := ""
@@ -107,36 +171,23 @@ func (r *Runner) Run(job *Job) *RunResult {
 			}
 		}
 
-		// Try to extract session ID from stdout.
-		sessionID := extractSessionID(stdout.String())
-
-		result.Status = status
-		result.ExitCode = exitCode
-		result.Error = errMsg
-		result.SessionID = sessionID
-
-		if err := r.store.UpdateRun(runID, status, exitCode, errMsg); err != nil {
-			log.Printf("scheduler: update run %s: %v", runID, err)
+		if err := r.store.UpdateRun(run.ID, run.Status, exitCode, errMsg); err != nil {
+			log.Printf("scheduler: update run %s: %v", run.ID, err)
 		}
 
 	case <-ctx.Done():
 		// Timeout: kill the process.
 		if cmd.Process != nil {
 			cmd.Process.Kill()
-			// Wait for it to finish so we don't leak the goroutine.
 			<-done
 		}
-		result.Status = "killed"
-		result.ExitCode = -1
-		result.Error = "process timed out after 30m"
-
-		if err := r.store.UpdateRun(runID, "killed", -1, "process timed out after 30m"); err != nil {
-			log.Printf("scheduler: update run %s: %v", runID, err)
+		run.Status = "killed"
+		if err := r.store.UpdateRun(run.ID, "killed", -1, "process timed out after 30m"); err != nil {
+			log.Printf("scheduler: update run %s: %v", run.ID, err)
 		}
 	}
 
-	log.Printf("scheduler: job %q run %s: %s (exit=%d)", job.ID, runID, result.Status, result.ExitCode)
-	return result
+	log.Printf("scheduler: subprocess job %q run %s finished", job.ID, run.ID)
 }
 
 // newRunID generates a short unique run ID.
