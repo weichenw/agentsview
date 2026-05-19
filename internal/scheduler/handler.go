@@ -5,18 +5,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
+	"time"
 )
 
 // Handler provides HTTP handlers for the scheduler REST API.
 type Handler struct {
-	store *Store
+	store  *Store
+	runner *Runner
 }
 
 // NewHandler creates a new Handler backed by the given Store.
-func NewHandler(store *Store) *Handler {
-	return &Handler{store: store}
+func NewHandler(store *Store, runner *Runner) *Handler {
+	return &Handler{store: store, runner: runner}
 }
 
 var validIDPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
@@ -197,6 +200,74 @@ func (h *Handler) EnableJob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DisableJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	h.setEnabled(w, id, false)
+}
+
+// RunJob handles POST /api/v1/scheduler/jobs/{id}/run
+// Triggers immediate execution and returns 202 Accepted with run ID.
+func (h *Handler) RunJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job := h.store.Get(id)
+	if job == nil {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if h.runner == nil {
+		writeError(w, http.StatusInternalServerError, "runner not available")
+		return
+	}
+
+	// Run in background goroutine; return immediately.
+	resultCh := make(chan *RunResult, 1)
+	go func() {
+		resultCh <- h.runner.Run(job)
+	}()
+
+	// Wait briefly for the run to be created, then return.
+	select {
+	case result := <-resultCh:
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"run_id": result.RunID,
+			"status": result.Status,
+			"job_id": id,
+		})
+	case <-time.After(100 * time.Millisecond):
+		// Run was launched; don't block the HTTP response.
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"run_id": "",
+			"status": "launched",
+			"job_id": id,
+		})
+	}
+}
+
+// ListRuns handles GET /api/v1/scheduler/runs
+func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	jobID := q.Get("job_id")
+	limit := 20
+	if v := q.Get("limit"); v != "" {
+		if n, err := parseInt(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	runs, err := h.store.ListRuns(jobID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+}
+
+func parseInt(s string) (int, error) {
+	var n int
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("not a number")
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
 }
 
 func (h *Handler) setEnabled(w http.ResponseWriter, id string, enabled bool) {

@@ -17,6 +17,7 @@ import (
 	"github.com/wesm/agentsview/internal/config"
 	"github.com/wesm/agentsview/internal/db"
 	"github.com/wesm/agentsview/internal/insight"
+	"github.com/wesm/agentsview/internal/scheduler"
 	"github.com/wesm/agentsview/internal/service"
 	"github.com/wesm/agentsview/internal/sync"
 	"github.com/wesm/agentsview/internal/web"
@@ -118,10 +119,25 @@ func New(
 	// Initialize scheduler store and handler.
 	// Failure to read/create schedules.json is non-fatal;
 	// the scheduler just returns empty lists.
-	if schedStore, err := scheduler.NewStore(cfg.DataDir); err == nil {
-		s.schedulerHandler = scheduler.NewHandler(schedStore)
+	var schedStore *scheduler.Store
+	if localDB, ok := database.(*db.DB); ok {
+		var err error
+		schedStore, err = scheduler.NewStore(cfg.DataDir, localDB)
+		if err != nil {
+			log.Printf("scheduler: %v (scheduler disabled)", err)
+		}
 	} else {
-		log.Printf("scheduler: %v (scheduler disabled)", err)
+		// Read-only/PG mode: still allow schedule management
+		// but run history won't be available.
+		var err error
+		schedStore, err = scheduler.NewStore(cfg.DataDir, nil)
+		if err != nil {
+			log.Printf("scheduler: %v (scheduler disabled)", err)
+		}
+	}
+	if schedStore != nil {
+		runner := scheduler.NewRunner(schedStore)
+		s.schedulerHandler = scheduler.NewHandler(schedStore, runner)
 	}
 
 	for _, opt := range opts {
@@ -375,6 +391,14 @@ func (s *Server) routes() {
 		s.mux.Handle(
 			"POST /api/v1/scheduler/jobs/{id}/disable",
 			s.withTimeout(http.HandlerFunc(s.schedulerHandler.DisableJob)),
+		)
+		s.mux.Handle(
+			"POST /api/v1/scheduler/jobs/{id}/run",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.RunJob)),
+		)
+		s.mux.Handle(
+			"GET /api/v1/scheduler/runs",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.ListRuns)),
 		)
 	}
 

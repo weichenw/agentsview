@@ -345,3 +345,17 @@ CREATE TABLE IF NOT EXISTS git_cache (
     payload     TEXT NOT NULL,             -- JSON-encoded result
     computed_at TEXT NOT NULL              -- RFC3339
 );
+
+-- Scheduler run history: each entry records one execution of a
+-- scheduled job. session_id links to the sessions table for full
+-- replay, token cost, and health score via the existing session API.
+CREATE TABLE IF NOT EXISTS scheduler_runs (
+    id          TEXT PRIMARY KEY,
+    job_id      TEXT NOT NULL,
+    session_id  TEXT,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    status      TEXT NOT NULL DEFAULT 'running',
+    exit_code   INTEGER,
+    error       TEXT
+);
