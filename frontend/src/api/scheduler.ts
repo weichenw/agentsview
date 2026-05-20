@@ -1,31 +1,32 @@
+import { getBase, getAuthToken, ApiError } from "../lib/api/client.js";
 import type { Job, JobFormData, SchedulerRun, RunResponse } from "../types/scheduler.js";
 
-function getBase(): string {
-  const server = localStorage.getItem("agentsview-server-url");
-  if (server) return `${server}/api/v1`;
-  const baseEl = document.querySelector("base[href]");
-  if (baseEl) {
-    const base = new URL(document.baseURI).pathname.replace(/\/$/, "");
-    return `${base}/api/v1`;
-  }
-  return "/api/v1";
-}
-
 function authHeaders(init?: RequestInit): RequestInit {
-  const token = localStorage.getItem("agentsview-auth-token");
+  const token = getAuthToken();
   if (!token) return init ?? {};
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);
   return { ...init, headers };
 }
 
+async function responseErrorMessage(res: Response): Promise<string> {
+  const body = await res.text().catch(() => "");
+  const text = body.trim();
+  if (!text) return `API ${res.status}`;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed !== null && typeof parsed === "object" && "error" in parsed && typeof parsed.error === "string" && parsed.error) {
+      return parsed.error;
+    }
+  } catch { /* plain text */ }
+  return text;
+}
+
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${getBase()}${path}`, authHeaders(init));
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(body.trim() || `API ${res.status}`);
+    throw new ApiError(res.status, await responseErrorMessage(res));
   }
-  // Handle 204 No Content
   if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
 }
