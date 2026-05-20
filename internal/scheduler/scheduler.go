@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"fmt"
 	"log"
 	"sync"
 
@@ -81,7 +80,7 @@ func (s *Scheduler) addJobLocked(job *Job) {
 	jobCopy := *job // capture by value
 	entryID, err := s.cron.AddFunc(job.Cron, func() {
 		log.Printf("scheduler: firing job %q (%s)", jobCopy.ID, jobCopy.Name)
-		s.runner.Run(&jobCopy)
+		s.runner.Run(&jobCopy, newRunID())
 	})
 	if err != nil {
 		log.Printf("scheduler: invalid cron expression for job %q: %v", job.ID, err)

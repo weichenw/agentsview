@@ -255,7 +255,7 @@ func (h *Handler) RunJob(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Fire the actual run in a background goroutine.
-	go h.runner.Run(job)
+	go h.runner.Run(job, runID)
 }
 
 // ListRuns handles GET /api/v1/scheduler/runs
