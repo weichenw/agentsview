@@ -103,6 +103,9 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 	// Build the command string for the new window.
 	// cmux new-window -n "{id}" "cd {dir} && pi ..."
 	piArgs := []string{}
+	if job.Agent != "" {
+		piArgs = append(piArgs, job.Agent)
+	}
 	if !job.InheritProjectContext {
 		piArgs = append(piArgs, "--no-context-files")
 	}
@@ -145,6 +148,9 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	// Build command.
 	args := []string{}
+	if job.Agent != "" {
+		args = append(args, job.Agent)
+	}
 	if !job.InheritProjectContext {
 		args = append(args, "--no-context-files")
 	}
