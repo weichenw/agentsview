@@ -101,7 +101,7 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 	// Load agent system prompt.
 	var fullPrompt string
 	if job.Agent != "" {
-		if sp, err := loadAgentSystemPrompt(job.Agent); err == nil {
+		if sp, _, err := loadAgentSystemPrompt(job.Agent); err == nil {
 			fullPrompt = sp + "\n\n---\n\n" + job.Prompt
 		} else {
 			log.Printf("scheduler: agent %s: %v, using prompt only", job.Agent, err)
@@ -156,9 +156,11 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	// Load agent system prompt from ~/.pi/agent/agents/{agent}.md
 	var fullPrompt string
+	var telegramLabel string
 	if job.Agent != "" {
-		if sp, err := loadAgentSystemPrompt(job.Agent); err == nil {
+		if sp, tl, err := loadAgentSystemPrompt(job.Agent); err == nil {
 			fullPrompt = sp + "\n\n---\n\n" + job.Prompt
+			telegramLabel = tl
 		} else {
 			log.Printf("scheduler: agent %s: %v, using prompt only", job.Agent, err)
 			fullPrompt = job.Prompt
@@ -187,6 +189,9 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	cmd := exec.Command(piPath, args...)
 	if job.WorkingDir != "" {
 		cmd.Dir = job.WorkingDir
+	}
+	if telegramLabel != "" {
+		cmd.Env = append(os.Environ(), "PI_TELEGRAM_LABEL="+telegramLabel)
 	}
 
 	// Cap output at 10MB.
@@ -356,15 +361,14 @@ func (mw *maxSizeWriter) Write(p []byte) (int, error) {
 	return mw.w.Write(p)
 }
 
-func loadAgentSystemPrompt(agentName string) (string, error) {
+func loadAgentSystemPrompt(agentName string) (systemPrompt string, telegramLabel string, err error) {
 	agentPath := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "agents", agentName+".md")
 	data, err := os.ReadFile(agentPath)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	content := string(data)
-	var telegramLabel string
 
 	// Parse YAML frontmatter and extract telegram_label.
 	if strings.HasPrefix(content, "---") {
@@ -382,11 +386,10 @@ func loadAgentSystemPrompt(agentName string) (string, error) {
 		}
 	}
 
-	// If a telegram label is specified, prepend it to the prompt so pi
-	// knows which bot to use.
+	// Prepend telegram connect instruction to the prompt.
 	if telegramLabel != "" {
-		content = "Connect to Telegram bot: " + telegramLabel + "\n\n" + content
+		content = "/telegram connect " + telegramLabel + "\n\n" + content
 	}
 
-	return content, nil
+	return content, telegramLabel, nil
 }
