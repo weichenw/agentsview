@@ -101,8 +101,12 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 	// Load agent system prompt.
 	var fullPrompt string
 	if job.Agent != "" {
-		systemPrompt, _ := loadAgentSystemPrompt(job.Agent)
-		fullPrompt = systemPrompt + "\n\n---\n\n" + job.Prompt
+		if sp, err := loadAgentSystemPrompt(job.Agent); err == nil {
+			fullPrompt = sp + "\n\n---\n\n" + job.Prompt
+		} else {
+			log.Printf("scheduler: agent %s: %v, using prompt only", job.Agent, err)
+			fullPrompt = job.Prompt
+		}
 	} else {
 		fullPrompt = job.Prompt
 	}
@@ -153,8 +157,12 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	// Load agent system prompt from ~/.pi/agent/agents/{agent}.md
 	var fullPrompt string
 	if job.Agent != "" {
-		systemPrompt, _ := loadAgentSystemPrompt(job.Agent)
-		fullPrompt = systemPrompt + "\n\n---\n\n" + job.Prompt
+		if sp, err := loadAgentSystemPrompt(job.Agent); err == nil {
+			fullPrompt = sp + "\n\n---\n\n" + job.Prompt
+		} else {
+			log.Printf("scheduler: agent %s: %v, using prompt only", job.Agent, err)
+			fullPrompt = job.Prompt
+		}
 	} else {
 		fullPrompt = job.Prompt
 	}
