@@ -128,7 +128,12 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	}
 	args = append(args, job.Prompt)
 
-	cmd := exec.Command("pi", args...)
+	piPath, err := exec.LookPath("pi")
+	if err != nil {
+		// fallback to known homebrew location
+		piPath = "/opt/homebrew/bin/pi"
+	}
+	cmd := exec.Command(piPath, args...)
 	if job.WorkingDir != "" {
 		cmd.Dir = job.WorkingDir
 	}
