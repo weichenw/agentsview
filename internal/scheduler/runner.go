@@ -258,11 +258,15 @@ func findLatestSessionID(startedAt time.Time) string {
 		return ""
 	}
 
-	// Extract UUID from filename (format: session_<uuid>.jsonl)
+	// Extract UUID from filename (format: <timestamp>_<uuid>.jsonl)
+	// Session IDs in the database have a "pi:" prefix.
 	base := filepath.Base(latestPath)
 	parts := strings.Split(base, "_")
 	if len(parts) >= 2 {
-		return strings.TrimSuffix(parts[len(parts)-1], ".jsonl")
+		uuid := strings.TrimSuffix(parts[len(parts)-1], ".jsonl")
+		if uuid != "" {
+			return "pi:" + uuid
+		}
 	}
 	return ""
 }
