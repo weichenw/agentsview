@@ -98,23 +98,27 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 		return
 	}
 
+	// Load agent system prompt.
+	var fullPrompt string
+	if job.Agent != "" {
+		systemPrompt, _ := loadAgentSystemPrompt(job.Agent)
+		fullPrompt = systemPrompt + "\n\n---\n\n" + job.Prompt
+	} else {
+		fullPrompt = job.Prompt
+	}
+
 	// Build the command string for the new window.
 	// cmux new-window -n "{id}" "cd {dir} && pi ..."
 	piArgs := []string{}
-	if job.Agent != "" {
-		piArgs = append(piArgs, job.Agent)
-	}
 	if !job.InheritProjectContext {
 		piArgs = append(piArgs, "--no-context-files")
 	}
-	agentPath := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "agents", job.Agent+".md")
-	piArgs = append(piArgs, "--skill", agentPath)
 	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", "scheduler")
 	piArgs = append(piArgs, "--session-dir", sessionDir)
 	if job.Model != "" {
 		piArgs = append(piArgs, "--model", job.Model)
 	}
-	piArgs = append(piArgs, job.Prompt)
+	piArgs = append(piArgs, fullPrompt)
 
 	piCmd := "pi"
 	for _, a := range piArgs {
@@ -146,22 +150,26 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 // runSubprocess spawns a job as a subprocess with output capture,
 // timeout handling, and run history tracking.
 func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
+	// Load agent system prompt from ~/.pi/agent/agents/{agent}.md
+	var fullPrompt string
+	if job.Agent != "" {
+		systemPrompt, _ := loadAgentSystemPrompt(job.Agent)
+		fullPrompt = systemPrompt + "\n\n---\n\n" + job.Prompt
+	} else {
+		fullPrompt = job.Prompt
+	}
+
 	// Build command.
 	args := []string{}
-	if job.Agent != "" {
-		args = append(args, job.Agent)
-	}
 	if !job.InheritProjectContext {
 		args = append(args, "--no-context-files")
 	}
 	if job.Model != "" {
 		args = append(args, "--model", job.Model)
 	}
-	agentPath := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "agents", job.Agent+".md")
-	args = append(args, "--skill", agentPath)
 	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", "scheduler")
 	args = append(args, "--session-dir", sessionDir)
-	args = append(args, job.Prompt)
+	args = append(args, fullPrompt)
 
 	piPath, err := exec.LookPath("pi")
 	if err != nil {
