@@ -3,6 +3,7 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -109,6 +110,8 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 	if !job.InheritProjectContext {
 		piArgs = append(piArgs, "--no-context-files")
 	}
+	agentPath := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "agents", job.Agent+".md")
+	piArgs = append(piArgs, "--skill", agentPath)
 	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", "scheduler")
 	piArgs = append(piArgs, "--session-dir", sessionDir)
 	if job.Model != "" {
@@ -157,6 +160,8 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	if job.Model != "" {
 		args = append(args, "--model", job.Model)
 	}
+	agentPath := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "agents", job.Agent+".md")
+	args = append(args, "--skill", agentPath)
 	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", "scheduler")
 	args = append(args, "--session-dir", sessionDir)
 	args = append(args, job.Prompt)
@@ -224,13 +229,18 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 		}
 
 	case <-ctx.Done():
-		// Timeout: kill the process.
+		// Check whether this was a kill (explicit cancellation) or timeout.
+		reason := "process timed out after 30m"
+		if errors.Is(ctx.Err(), context.Canceled) {
+			reason = "killed by user"
+		}
+		// Kill the process if it's still running.
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 			<-done
 		}
 		run.Status = "killed"
-		if err := r.store.UpdateRun(run.ID, "killed", -1, "process timed out after 30m"); err != nil {
+		if err := r.store.UpdateRun(run.ID, "killed", -1, reason); err != nil {
 			log.Printf("scheduler: update run %s: %v", run.ID, err)
 		}
 	}
