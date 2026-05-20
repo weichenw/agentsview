@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -17,12 +20,14 @@ const (
 
 // Runner spawns Pi processes for scheduled jobs.
 type Runner struct {
-	store *Store
+	store       *Store
+	postRunHook func()
 }
 
 // NewRunner creates a Runner that records run history to store.
-func NewRunner(store *Store) *Runner {
-	return &Runner{store: store}
+// postRunHook is called after each subprocess run completes (success or failure).
+func NewRunner(store *Store, postRunHook func()) *Runner {
+	return &Runner{store: store, postRunHook: postRunHook}
 }
 
 // RunResult holds the outcome of a single job execution.
@@ -37,8 +42,7 @@ type RunResult struct {
 // Run executes a job immediately as a subprocess.
 // It creates a run entry, spawns the process, waits for completion,
 // and updates the run entry with the result.
-func (r *Runner) Run(job *Job) *RunResult {
-	runID := newRunID()
+func (r *Runner) Run(job *Job, runID string) *RunResult {
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 
 	// Create initial run entry.
@@ -81,8 +85,10 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 	// cmux new-window -n "{id}" "cd {dir} && pi ..."
 	piArgs := []string{}
 	if !job.InheritProjectContext {
-		piArgs = append(piArgs, "--no-project-context")
+		piArgs = append(piArgs, "--no-context-files")
 	}
+	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", "scheduler")
+	piArgs = append(piArgs, "--session-dir", sessionDir)
 	if job.Model != "" {
 		piArgs = append(piArgs, "--model", job.Model)
 	}
@@ -121,11 +127,13 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	// Build command.
 	args := []string{}
 	if !job.InheritProjectContext {
-		args = append(args, "--no-project-context")
+		args = append(args, "--no-context-files")
 	}
 	if job.Model != "" {
 		args = append(args, "--model", job.Model)
 	}
+	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", "scheduler")
+	args = append(args, "--session-dir", sessionDir)
 	args = append(args, job.Prompt)
 
 	piPath, err := exec.LookPath("pi")
@@ -192,6 +200,25 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 		}
 	}
 
+	if r.postRunHook != nil {
+		r.postRunHook()
+	}
+
+	// Find the session file created by this run and link it.
+	startedAt, parseErr := time.Parse(time.RFC3339, run.StartedAt)
+	if parseErr == nil {
+		if sessionID := findLatestSessionID(startedAt); sessionID != "" {
+			run.SessionID = sessionID
+			// Update the session_id in the database.
+			if _, dbErr := r.store.db.Writer().Exec(
+				`UPDATE scheduler_runs SET session_id = ? WHERE id = ?`,
+				sessionID, run.ID,
+			); dbErr != nil {
+				log.Printf("scheduler: update session_id for run %s: %v", run.ID, dbErr)
+			}
+		}
+	}
+
 	log.Printf("scheduler: subprocess job %q run %s finished", job.ID, run.ID)
 }
 
@@ -201,22 +228,38 @@ func newRunID() string {
 	return fmt.Sprintf("run_%x", ts)
 }
 
-// extractSessionID attempts to find a session ID from pi's stdout.
-// Looks for a line containing "session_id" or "Session ID" emitted by pi.
-func extractSessionID(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		// pi outputs session info on stderr typically, but check
-		// stdout too as a fallback.
-		if strings.Contains(line, "session_id") {
-			parts := strings.Split(line, ":")
-			if len(parts) >= 2 {
-				id := strings.TrimSpace(parts[len(parts)-1])
-				if id != "" {
-					return id
-				}
-			}
+// findLatestSessionID scans the default pi sessions directory for the
+// most recently modified .jsonl file created after startedAt, and
+// returns the session UUID extracted from its filename.
+func findLatestSessionID(startedAt time.Time) string {
+	sessionsDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions")
+	var latestPath string
+	var latestMod time.Time
+
+	filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
 		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.ModTime().After(startedAt) && info.ModTime().After(latestMod) {
+			latestMod = info.ModTime()
+			latestPath = path
+		}
+		return nil
+	})
+
+	if latestPath == "" {
+		return ""
+	}
+
+	// Extract UUID from filename (format: session_<uuid>.jsonl)
+	base := filepath.Base(latestPath)
+	parts := strings.Split(base, "_")
+	if len(parts) >= 2 {
+		return strings.TrimSuffix(parts[len(parts)-1], ".jsonl")
 	}
 	return ""
 }
