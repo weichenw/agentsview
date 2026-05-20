@@ -232,28 +232,30 @@ func (h *Handler) RunJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run in background goroutine; return immediately.
-	resultCh := make(chan *RunResult, 1)
-	go func() {
-		resultCh <- h.runner.Run(job)
-	}()
-
-	// Wait briefly for the run to be created, then return.
-	select {
-	case result := <-resultCh:
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"run_id": result.RunID,
-			"status": result.Status,
-			"job_id": id,
-		})
-	case <-time.After(100 * time.Millisecond):
-		// Run was launched; don't block the HTTP response.
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"run_id": "",
-			"status": "launched",
-			"job_id": id,
-		})
+	// Generate run ID and create the run entry synchronously
+	// so the response always includes a valid run_id.
+	runID := newRunID()
+	startedAt := time.Now().UTC().Format(time.RFC3339)
+	run := &SchedulerRun{
+		ID:        runID,
+		JobID:     job.ID,
+		StartedAt: startedAt,
+		Status:    "running",
 	}
+	if err := h.store.CreateRun(run); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create run entry")
+		return
+	}
+
+	// Return the run_id immediately before the (possibly slow) subprocess.
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"run_id": runID,
+		"status": "launched",
+		"job_id": id,
+	})
+
+	// Fire the actual run in a background goroutine.
+	go h.runner.Run(job)
 }
 
 // ListRuns handles GET /api/v1/scheduler/runs
