@@ -238,6 +238,19 @@
 
     <button
       class="nav-btn"
+      class:active={router.route === "scheduler"}
+      onclick={() => router.navigate("scheduler")}
+      title="Scheduler"
+      aria-label="Scheduler"
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0a8 8 0 110 16A8 8 0 018 0zm0 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zm-.5 2a.5.5 0 01.5.5V8a.5.5 0 00.5.5h2.5a.5.5 0 010 1H8a1 1 0 01-1-1V4a.5.5 0 01.5-.5z"/>
+      </svg>
+      <span class="nav-label">Scheduler</span>
+    </button>
+
+    <button
+      class="nav-btn"
       class:active={router.route === "usage"}
       onclick={() => router.navigate("usage")}
       title="Token Usage"
