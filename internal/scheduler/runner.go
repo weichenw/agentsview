@@ -3,7 +3,6 @@ package scheduler
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -24,30 +23,28 @@ const (
 type Runner struct {
 	store       *Store
 	postRunHook func(sessionID string)
-	runningMu   sync.Mutex
-	running     map[string]context.CancelFunc // runID -> cancel
+	mu          sync.Mutex
+	activeRuns  map[string]*os.Process // runID -> process
 }
 
 // NewRunner creates a Runner that records run history to store.
 // postRunHook is called after each subprocess run completes (success or failure),
 // with the discovered session ID (may be empty).
 func NewRunner(store *Store, postRunHook func(sessionID string)) *Runner {
-	return &Runner{store: store, postRunHook: postRunHook, running: make(map[string]context.CancelFunc)}
+	return &Runner{store: store, postRunHook: postRunHook, activeRuns: make(map[string]*os.Process)}
 }
 
-// KillRun cancels a running subprocess identified by runID.
-// Returns an error if no running process with that ID is found.
+// KillRun kills a running subprocess by runID.
 func (r *Runner) KillRun(runID string) error {
-	r.runningMu.Lock()
-	cancel, ok := r.running[runID]
-	delete(r.running, runID)
-	r.runningMu.Unlock()
+	r.mu.Lock()
+	proc, ok := r.activeRuns[runID]
+	delete(r.activeRuns, runID)
+	r.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("no running process for run %s", runID)
+		return fmt.Errorf("run %s not found or already finished", runID)
 	}
-	cancel()
-	log.Printf("scheduler: killed run %s", runID)
-	return nil
+	log.Printf("scheduler: killing run %s (pid %d)", runID, proc.Pid)
+	return proc.Kill()
 }
 
 // RunResult holds the outcome of a single job execution.
@@ -185,19 +182,26 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 
-	// Register this run so it can be killed via KillRun.
-	r.runningMu.Lock()
-	r.running[run.ID] = cancel
-	r.runningMu.Unlock()
+	// Start the process and register it for on-demand kill.
+	if err := cmd.Start(); err != nil {
+		log.Printf("scheduler: failed to start pi for job %q: %v", job.ID, err)
+		run.Status = "failed"
+		r.store.UpdateRun(run.ID, "failed", -1, err.Error())
+		return
+	}
+
+	r.mu.Lock()
+	r.activeRuns[run.ID] = cmd.Process
+	r.mu.Unlock()
 	defer func() {
-		r.runningMu.Lock()
-		delete(r.running, run.ID)
-		r.runningMu.Unlock()
+		r.mu.Lock()
+		delete(r.activeRuns, run.ID)
+		r.mu.Unlock()
 	}()
 
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Run()
+		done <- cmd.Wait()
 	}()
 
 	select {
@@ -215,6 +219,10 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 		if exitCode != 0 {
 			run.Status = "failed"
 		}
+		// If the process was killed by KillRun, mark as killed.
+		if exitCode == -1 {
+			run.Status = "killed"
+		}
 
 		errMsg := ""
 		if exitCode != 0 {
@@ -229,18 +237,13 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 		}
 
 	case <-ctx.Done():
-		// Check whether this was a kill (explicit cancellation) or timeout.
-		reason := "process timed out after 30m"
-		if errors.Is(ctx.Err(), context.Canceled) {
-			reason = "killed by user"
-		}
-		// Kill the process if it's still running.
+		// Timeout reached — kill the process.
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 			<-done
 		}
 		run.Status = "killed"
-		if err := r.store.UpdateRun(run.ID, "killed", -1, reason); err != nil {
+		if err := r.store.UpdateRun(run.ID, "killed", -1, "process timed out after 30m"); err != nil {
 			log.Printf("scheduler: update run %s: %v", run.ID, err)
 		}
 	}
