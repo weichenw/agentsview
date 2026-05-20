@@ -92,8 +92,10 @@ func New(
 	// engine when used by a read-only daemon) yields a read-only
 	// backend whose Sync returns db.ErrReadOnly.
 	var sessions service.SessionService
-	if local, ok := database.(*db.DB); ok && engine != nil {
-		sessions = service.NewDirectBackend(local, engine)
+	var localDB *db.DB // captured for scheduler below
+	if l, ok := database.(*db.DB); ok && engine != nil {
+		sessions = service.NewDirectBackend(l, engine)
+		localDB = l
 	} else {
 		sessions = service.NewReadOnlyBackend(database)
 	}
@@ -123,7 +125,7 @@ func New(
 	// Failure to read/create schedules.json is non-fatal;
 	// the scheduler just returns empty lists.
 	var schedStore *scheduler.Store
-	if localDB, ok := database.(*db.DB); ok {
+	if localDB != nil {
 		var err error
 		schedStore, err = scheduler.NewStore(cfg.DataDir, localDB)
 		if err != nil {
@@ -139,7 +141,11 @@ func New(
 		}
 	}
 	if schedStore != nil {
-		runner := scheduler.NewRunner(schedStore)
+		runner := scheduler.NewRunner(schedStore, func(sessionID string) {
+			if sessionID != "" && s.engine != nil {
+				s.engine.SyncSingleSession(sessionID)
+			}
+		})
 		s.scheduler = scheduler.New(schedStore, runner)
 		s.schedulerHandler = scheduler.NewHandler(schedStore, runner, s.scheduler)
 	}

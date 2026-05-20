@@ -21,12 +21,13 @@ const (
 // Runner spawns Pi processes for scheduled jobs.
 type Runner struct {
 	store       *Store
-	postRunHook func()
+	postRunHook func(sessionID string)
 }
 
 // NewRunner creates a Runner that records run history to store.
-// postRunHook is called after each subprocess run completes (success or failure).
-func NewRunner(store *Store, postRunHook func()) *Runner {
+// postRunHook is called after each subprocess run completes (success or failure),
+// with the discovered session ID (may be empty).
+func NewRunner(store *Store, postRunHook func(sessionID string)) *Runner {
 	return &Runner{store: store, postRunHook: postRunHook}
 }
 
@@ -200,21 +201,26 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 		}
 	}
 
-	if r.postRunHook != nil {
-		r.postRunHook()
-	}
-
-	// Find the session file created by this run and link it.
+// Find the session file created by this run and link it.
+	var sessionID string
 	startedAt, parseErr := time.Parse(time.RFC3339, run.StartedAt)
 	if parseErr == nil {
-		if sessionID := findLatestSessionID(startedAt); sessionID != "" {
+		sessionID = findLatestSessionID(startedAt)
+		if sessionID != "" {
 			run.SessionID = sessionID
-			// Update the session_id in the database.
 			if _, dbErr := r.store.db.Writer().Exec(
 				`UPDATE scheduler_runs SET session_id = ? WHERE id = ?`,
 				sessionID, run.ID,
 			); dbErr != nil {
 				log.Printf("scheduler: update session_id for run %s: %v", run.ID, dbErr)
+			}
+		}
+	}
+
+	// Fire post-run hook with the discovered session ID.
+	if r.postRunHook != nil {
+		r.postRunHook(sessionID)
+	}
 			}
 		}
 	}
