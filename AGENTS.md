@@ -38,3 +38,22 @@ handle data version changes. Schema changes use ALTER TABLE; parser changes
 trigger a full resync (build fresh DB, sync files, copy orphaned sessions from
 old DB, atomic swap). Existing session data must be preserved even when source
 files no longer exist on disk.
+
+## Build Requirements
+
+- Always run `go build ./...` before committing.
+- If the build fails, fix it before committing. Never commit broken code.
+- After frontend changes run `cd frontend && npm run build` to verify.
+
+## Commit Convention
+
+Use conventional commits:
+- `feat:` new features
+- `fix:` bug fixes
+- `refactor:` code cleanup
+- `chore:` config/build/dependency changes
+
+Examples:
+- `feat: add scheduler telegram auto-connect via PI_TELEGRAM_LABEL`
+- `fix: scheduler subprocess pi path lookup`
+- `chore: update go.mod with robfig/cron dependency`
