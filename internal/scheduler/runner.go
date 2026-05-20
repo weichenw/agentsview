@@ -221,9 +221,6 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	if r.postRunHook != nil {
 		r.postRunHook(sessionID)
 	}
-			}
-		}
-	}
 
 	log.Printf("scheduler: subprocess job %q run %s finished", job.ID, run.ID)
 }
