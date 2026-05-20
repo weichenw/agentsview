@@ -75,6 +75,10 @@ export async function runJob(id: string): Promise<RunResponse> {
   return fetchJSON<RunResponse>(`/scheduler/jobs/${id}/run`, { method: "POST" });
 }
 
+export async function killRun(runId: string): Promise<void> {
+  return fetchJSON<void>(`/scheduler/runs/${runId}/kill`, { method: "POST" });
+}
+
 export async function enableJob(id: string): Promise<Job> {
   return fetchJSON<Job>(`/scheduler/jobs/${id}/enable`, { method: "POST" });
 }

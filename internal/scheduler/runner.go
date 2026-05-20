@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,13 +23,30 @@ const (
 type Runner struct {
 	store       *Store
 	postRunHook func(sessionID string)
+	runningMu   sync.Mutex
+	running     map[string]context.CancelFunc // runID -> cancel
 }
 
 // NewRunner creates a Runner that records run history to store.
 // postRunHook is called after each subprocess run completes (success or failure),
 // with the discovered session ID (may be empty).
 func NewRunner(store *Store, postRunHook func(sessionID string)) *Runner {
-	return &Runner{store: store, postRunHook: postRunHook}
+	return &Runner{store: store, postRunHook: postRunHook, running: make(map[string]context.CancelFunc)}
+}
+
+// KillRun cancels a running subprocess identified by runID.
+// Returns an error if no running process with that ID is found.
+func (r *Runner) KillRun(runID string) error {
+	r.runningMu.Lock()
+	cancel, ok := r.running[runID]
+	delete(r.running, runID)
+	r.runningMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no running process for run %s", runID)
+	}
+	cancel()
+	log.Printf("scheduler: killed run %s", runID)
+	return nil
 }
 
 // RunResult holds the outcome of a single job execution.
@@ -155,6 +173,16 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	// Run with 30-minute timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
+
+	// Register this run so it can be killed via KillRun.
+	r.runningMu.Lock()
+	r.running[run.ID] = cancel
+	r.runningMu.Unlock()
+	defer func() {
+		r.runningMu.Lock()
+		delete(r.running, run.ID)
+		r.runningMu.Unlock()
+	}()
 
 	done := make(chan error, 1)
 	go func() {

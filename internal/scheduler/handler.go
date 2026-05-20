@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"time"
@@ -258,6 +259,23 @@ func (h *Handler) RunJob(w http.ResponseWriter, r *http.Request) {
 	go h.runner.Run(job, runID)
 }
 
+// KillRun handles POST /api/v1/scheduler/runs/{id}/kill
+// Kills a running subprocess for the given run ID.
+func (h *Handler) KillRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if h.runner == nil {
+		writeError(w, http.StatusInternalServerError, "runner not available")
+		return
+	}
+	if err := h.runner.KillRun(runID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	// Update the run entry in the database.
+	_ = h.store.UpdateRun(runID, "killed", -1, "killed by user")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ListRuns handles GET /api/v1/scheduler/runs
 func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -271,9 +289,11 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 
 	runs, err := h.store.ListRuns(jobID, limit)
 	if err != nil {
+		log.Printf("scheduler: ListRuns jobID=%q limit=%d err=%v", jobID, limit, err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	log.Printf("scheduler: ListRuns jobID=%q limit=%d runs=%d", jobID, limit, len(runs))
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
 }
 

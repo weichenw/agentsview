@@ -410,6 +410,10 @@ func (s *Server) routes() {
 			"GET /api/v1/scheduler/runs",
 			s.withTimeout(http.HandlerFunc(s.schedulerHandler.ListRuns)),
 		)
+		s.mux.Handle(
+			"POST /api/v1/scheduler/runs/{id}/kill",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.KillRun)),
+		)
 	}
 
 	// SPA fallback: serve embedded frontend

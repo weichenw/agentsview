@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import * as api from "../../api/scheduler.js";
-  import type { Job, SchedulerRun } from "../../types/scheduler.js";
+  import * as api from "../../../api/scheduler.js";
+  import type { Job, SchedulerRun } from "../../../types/scheduler.js";
   import { router } from "../../stores/router.svelte.js";
 
   let jobs: Job[] = $state([]);
@@ -343,6 +343,9 @@
                 <span class="run-cell run-relative">{formatRelativeTime(run.started_at)}</span>
                 {#if run.session_id}
                   <button class="session-link" onclick={() => navToSession(run.session_id!)}>→ view</button>
+                {/if}
+                {#if run.status === "running"}
+                  <button class="kill-btn" onclick={async () => { try { await api.killRun(run.id); runs = await api.listRuns(selectedJob!.id, 20); } catch { /* ignore */ }}} title="Kill this run">✕</button>
                 {/if}
                 {#if run.error}
                   <span class="run-error" title={run.error}>{run.error}</span>
@@ -895,6 +898,27 @@
   }
 
   .session-link:hover { text-decoration: underline; }
+
+  .kill-btn {
+    background: none;
+    border: 1px solid var(--accent-red, #ef4444);
+    color: var(--accent-red, #ef4444);
+    border-radius: 3px;
+    font-size: 10px;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    transition: background 0.12s;
+  }
+
+  .kill-btn:hover {
+    background: color-mix(in srgb, var(--accent-red) 15%, transparent);
+  }
 
   .run-error {
     color: var(--accent-red);
