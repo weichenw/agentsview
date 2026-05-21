@@ -134,7 +134,12 @@ func (r *Runner) runCmux(job *Job, run *SchedulerRun) {
 		windowCmd = "cd " + job.WorkingDir + " && " + piCmd
 	}
 
-	cmd := exec.Command(cmuxPath, "new-window", "-n", job.ID, windowCmd)
+	// cmux (like tmux) expects remaining args as the command.
+	// Without the sh -c wrapper, a multi-word string is treated as
+	// a single argv[0] (e.g. "pi --session-dir … prompt" is not an
+	// executable).  Always run via sh -c so the shell parses spaces,
+	// &&, etc. correctly.
+	cmd := exec.Command(cmuxPath, "new-window", "-n", job.ID, "sh", "-c", windowCmd)
 	if err := cmd.Start(); err != nil {
 		log.Printf("scheduler: cmux spawn failed for job %q: %v, falling back to subprocess", job.ID, err)
 		// Update run entry to record the failure before fallback.
