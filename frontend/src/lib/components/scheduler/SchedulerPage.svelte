@@ -28,6 +28,79 @@
 
   let formCronPreview = $derived(cronPreview(formCron));
 
+  // ── Cron Builder State ──
+  let cronTab = $state<"builder" | "custom">("builder");
+  let bMode = $state<"minute" | "hourly" | "daily" | "weekly" | "monthly">("daily");
+  let bMinuteInterval = $state(15);
+  let bHourlyMinute = $state(0);
+  let bTime = $state("09:00");
+  let bDays = $state<Set<number>>(new Set([1])); // Mon default
+  let bMonthlyDay = $state(1);
+
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function buildCron(): string {
+    const [hStr, mStr] = bTime.split(":");
+    const h = hStr ?? "9";
+    const m = mStr ?? "0";
+    switch (bMode) {
+      case "minute": return `*/${bMinuteInterval} * * * *`;
+      case "hourly": return `${String(bHourlyMinute).padStart(2, "0")} * * * *`;
+      case "daily": return `${m} ${h} * * *`;
+      case "weekly": {
+        if (bDays.size === 0) return `${m} ${h} * * *`;
+        const days = Array.from(bDays).sort((a, b) => a - b).join(",");
+        return `${m} ${h} * * ${days}`;
+      }
+      case "monthly": return `${m} ${h} ${bMonthlyDay} * *`;
+    }
+  }
+
+  function parseCronIntoBuilder(cron: string) {
+    const trimmed = cron.trim();
+    const parts = trimmed.split(/\s+/);
+    if (parts.length !== 5) return;
+    const [min, hour, dom, , dow] = parts;
+    // minute interval: */N * * * *
+    const minIntervalMatch = min.match(/^\*\/(\d+)$/);
+    if (minIntervalMatch && hour === "*" && dom === "*" && dow === "*") {
+      const n = parseInt(minIntervalMatch[1], 10);
+      if ([1, 5, 15, 30].includes(n)) {
+        bMode = "minute"; bMinuteInterval = n as 1 | 5 | 15 | 30; return;
+      }
+    }
+    // hourly: MM * * * *
+    if (min.match(/^\d{1,2}$/) && hour === "*" && dom === "*" && dow === "*") {
+      bMode = "hourly"; bHourlyMinute = parseInt(min, 10); return;
+    }
+    // weekly: MM HH * * D,D,D
+    if (dow !== "*") {
+      const days = dow.split(",").map((d) => parseInt(d, 10)).filter((d) => d >= 0 && d <= 6);
+      if (days.length > 0) {
+        bMode = "weekly"; bTime = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`; bDays = new Set(days); return;
+      }
+    }
+    // monthly: MM HH DD * *
+    if (dom !== "*" && dom.match(/^\d{1,2}$/)) {
+      const d = parseInt(dom, 10);
+      if (d >= 1 && d <= 31) {
+        bMode = "monthly"; bTime = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`; bMonthlyDay = d; return;
+      }
+    }
+    // daily fallback: MM HH * * *
+    bMode = "daily"; bTime = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
+  }
+
+  // Sync builder → formCron when builder tab is active
+  $effect(() => {
+    if (cronTab === "builder") {
+      const _ = [bMode, bMinuteInterval, bHourlyMinute, bTime, bDays, bMonthlyDay];
+      formCron = buildCron();
+    }
+  });
+
+  // ── /Cron Builder ──
+
   const filteredJobs = $derived(
     searchQuery
       ? jobs.filter((j) =>
@@ -81,6 +154,8 @@
     formName = ""; formCron = ""; formAgent = ""; formPrompt = "";
     formModel = ""; formWorkingDir = ""; formSpawnMode = "cmux";
     formInheritContext = false; formEnabled = true;
+    cronTab = "builder"; bMode = "daily"; bMinuteInterval = 15; bHourlyMinute = 0;
+    bTime = "09:00"; bDays = new Set([1]); bMonthlyDay = 1;
   }
 
   function fillForm(job: Job) {
@@ -88,6 +163,7 @@
     formPrompt = job.prompt; formModel = job.model ?? "";
     formWorkingDir = job.working_dir; formSpawnMode = job.spawn_mode;
     formInheritContext = job.inherit_project_context; formEnabled = job.enabled;
+    parseCronIntoBuilder(job.cron);
   }
 
   onMount(() => loadJobs());
@@ -246,11 +322,102 @@
         <div class="form-fields">
           <label>Name <input bind:value={formName} /></label>
           <label>
-            Cron Expression
-            <input bind:value={formCron} class="mono" placeholder="0 7 * * *" />
-            {#if formCronPreview.text}
-              <span class="field-hint" class:cron-error={formCronPreview.error}>{formCronPreview.text}</span>
-            {/if}
+            Cron Schedule
+            <div class="cron-builder-card">
+              <div class="cron-tabs">
+                <button class="tab-btn" class:active={cronTab === "builder"} onclick={() => { cronTab = "builder"; parseCronIntoBuilder(formCron); }}>Builder</button>
+                <button class="tab-btn" class:active={cronTab === "custom"} onclick={() => cronTab = "custom"}>Custom</button>
+              </div>
+              {#if cronTab === "builder"}
+                <div class="builder-body">
+                  <div class="builder-row">
+                    <span>Runs</span>
+                    <select bind:value={bMode} class="builder-select">
+                      <option value="minute">Every minute</option>
+                      <option value="hourly">Hourly</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                    </select>
+                  </div>
+                  {#if bMode === "minute"}
+                    <div class="builder-row">
+                      <span>Every</span>
+                      <select bind:value={bMinuteInterval} class="builder-select narrow">
+                        <option value={1}>1</option>
+                        <option value={5}>5</option>
+                        <option value={15}>15</option>
+                        <option value={30}>30</option>
+                      </select>
+                      <span>minutes</span>
+                    </div>
+                  {:else if bMode === "hourly"}
+                    <div class="builder-row">
+                      <span>At minute</span>
+                      <select bind:value={bHourlyMinute} class="builder-select narrow">
+                        {#each Array.from({ length: 60 }, (_, i) => i) as m}
+                          <option value={m}>{String(m).padStart(2, "0")}</option>
+                        {/each}
+                      </select>
+                      <span>past every hour</span>
+                    </div>
+                  {:else if bMode === "daily"}
+                    <div class="builder-row">
+                      <span>At</span>
+                      <input type="time" bind:value={bTime} class="builder-time" />
+                    </div>
+                  {:else if bMode === "weekly"}
+                    <div class="builder-row">
+                      <span>At</span>
+                      <input type="time" bind:value={bTime} class="builder-time" />
+                    </div>
+                    <div class="builder-row">
+                      <span>On</span>
+                      <div class="day-pills">
+                        {#each DAY_NAMES as name, i}
+                          <button
+                            class="day-pill"
+                            class:selected={bDays.has(i)}
+                            onclick={() => {
+                              const next = new Set(bDays);
+                              if (next.has(i)) next.delete(i);
+                              else next.add(i);
+                              bDays = next;
+                            }}
+                          >{name}</button>
+                        {/each}
+                      </div>
+                    </div>
+                  {:else if bMode === "monthly"}
+                    <div class="builder-row">
+                      <span>At</span>
+                      <input type="time" bind:value={bTime} class="builder-time" />
+                    </div>
+                    <div class="builder-row">
+                      <span>On day</span>
+                      <select bind:value={bMonthlyDay} class="builder-select narrow">
+                        {#each Array.from({ length: 31 }, (_, i) => i + 1) as d}
+                          <option value={d}>{d}</option>
+                        {/each}
+                      </select>
+                      <span>of every month</span>
+                    </div>
+                  {/if}
+                  <div class="cron-preview">
+                    <span class="preview-label">Current schedule:</span>
+                    <span class="preview-expr">{buildCron()}</span>
+                    {#if cronHumanReadable(buildCron())}— {cronHumanReadable(buildCron())}{/if}
+                  </div>
+                </div>
+              {:else}
+                <div class="custom-body">
+                  <input bind:value={formCron} class="mono" placeholder="0 7 * * *" />
+                  {#if formCronPreview.text}
+                    <span class="field-hint" class:cron-error={formCronPreview.error}>{formCronPreview.text}</span>
+                  {/if}
+                </div>
+              {/if}
+            </div>
           </label>
           <label>Agent <input bind:value={formAgent} placeholder="claude" /></label>
           <label>Prompt <textarea bind:value={formPrompt} rows={4} class="mono" placeholder="Instructions for the agent..."></textarea></label>
@@ -290,11 +457,102 @@
         <div class="form-fields">
           <label>Name <input bind:value={formName} /></label>
           <label>
-            Cron Expression
-            <input bind:value={formCron} class="mono" />
-            {#if formCronPreview.text}
-              <span class="field-hint" class:cron-error={formCronPreview.error}>{formCronPreview.text}</span>
-            {/if}
+            Cron Schedule
+            <div class="cron-builder-card">
+              <div class="cron-tabs">
+                <button class="tab-btn" class:active={cronTab === "builder"} onclick={() => { cronTab = "builder"; parseCronIntoBuilder(formCron); }}>Builder</button>
+                <button class="tab-btn" class:active={cronTab === "custom"} onclick={() => cronTab = "custom"}>Custom</button>
+              </div>
+              {#if cronTab === "builder"}
+                <div class="builder-body">
+                  <div class="builder-row">
+                    <span>Runs</span>
+                    <select bind:value={bMode} class="builder-select">
+                      <option value="minute">Every minute</option>
+                      <option value="hourly">Hourly</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                    </select>
+                  </div>
+                  {#if bMode === "minute"}
+                    <div class="builder-row">
+                      <span>Every</span>
+                      <select bind:value={bMinuteInterval} class="builder-select narrow">
+                        <option value={1}>1</option>
+                        <option value={5}>5</option>
+                        <option value={15}>15</option>
+                        <option value={30}>30</option>
+                      </select>
+                      <span>minutes</span>
+                    </div>
+                  {:else if bMode === "hourly"}
+                    <div class="builder-row">
+                      <span>At minute</span>
+                      <select bind:value={bHourlyMinute} class="builder-select narrow">
+                        {#each Array.from({ length: 60 }, (_, i) => i) as m}
+                          <option value={m}>{String(m).padStart(2, "0")}</option>
+                        {/each}
+                      </select>
+                      <span>past every hour</span>
+                    </div>
+                  {:else if bMode === "daily"}
+                    <div class="builder-row">
+                      <span>At</span>
+                      <input type="time" bind:value={bTime} class="builder-time" />
+                    </div>
+                  {:else if bMode === "weekly"}
+                    <div class="builder-row">
+                      <span>At</span>
+                      <input type="time" bind:value={bTime} class="builder-time" />
+                    </div>
+                    <div class="builder-row">
+                      <span>On</span>
+                      <div class="day-pills">
+                        {#each DAY_NAMES as name, i}
+                          <button
+                            class="day-pill"
+                            class:selected={bDays.has(i)}
+                            onclick={() => {
+                              const next = new Set(bDays);
+                              if (next.has(i)) next.delete(i);
+                              else next.add(i);
+                              bDays = next;
+                            }}
+                          >{name}</button>
+                        {/each}
+                      </div>
+                    </div>
+                  {:else if bMode === "monthly"}
+                    <div class="builder-row">
+                      <span>At</span>
+                      <input type="time" bind:value={bTime} class="builder-time" />
+                    </div>
+                    <div class="builder-row">
+                      <span>On day</span>
+                      <select bind:value={bMonthlyDay} class="builder-select narrow">
+                        {#each Array.from({ length: 31 }, (_, i) => i + 1) as d}
+                          <option value={d}>{d}</option>
+                        {/each}
+                      </select>
+                      <span>of every month</span>
+                    </div>
+                  {/if}
+                  <div class="cron-preview">
+                    <span class="preview-label">Current schedule:</span>
+                    <span class="preview-expr">{buildCron()}</span>
+                    {#if cronHumanReadable(buildCron())}— {cronHumanReadable(buildCron())}{/if}
+                  </div>
+                </div>
+              {:else}
+                <div class="custom-body">
+                  <input bind:value={formCron} class="mono" />
+                  {#if formCronPreview.text}
+                    <span class="field-hint" class:cron-error={formCronPreview.error}>{formCronPreview.text}</span>
+                  {/if}
+                </div>
+              {/if}
+            </div>
           </label>
           <label>Agent <input bind:value={formAgent} /></label>
           <label>Prompt <textarea bind:value={formPrompt} rows={4} class="mono"></textarea></label>
@@ -968,8 +1226,138 @@
     background: var(--bg-surface-hover);
   }
 
-  .run-error {
-    color: var(--accent-red);
-    font-size: 10px;
+  /* ── Cron Builder ── */
+  .cron-builder-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    margin-top: 4px;
+    overflow: hidden;
   }
+
+  .cron-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border-default);
+  }
+
+  .tab-btn {
+    flex: 1;
+    padding: 6px 0;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--bg-inset);
+    border-right: 1px solid var(--border-default);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+
+  .tab-btn:last-child { border-right: none; }
+  .tab-btn:hover { color: var(--text-secondary); }
+  .tab-btn.active {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .builder-body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .custom-body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .builder-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .builder-select {
+    padding: 4px 6px;
+    font-size: 12px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-inset);
+    color: var(--text-primary);
+    min-width: 100px;
+  }
+
+  .builder-select.narrow { min-width: 48px; width: auto; }
+  .builder-select:focus { outline: none; border-color: var(--accent-blue); }
+
+  .builder-time {
+    padding: 4px 6px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-inset);
+    color: var(--text-primary);
+  }
+
+  .builder-time:focus { outline: none; border-color: var(--accent-blue); }
+
+  .day-pills {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .day-pill {
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--bg-inset);
+    border: 1px solid var(--border-muted);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+    user-select: none;
+  }
+
+  .day-pill:hover { color: var(--text-secondary); }
+  .day-pill.selected {
+    background: var(--accent-blue);
+    color: white;
+    border-color: var(--accent-blue);
+  }
+
+  .cron-preview {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-muted);
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .preview-label { color: var(--text-secondary); font-weight: 500; margin-right: 4px; }
+  .preview-expr { font-family: var(--font-mono); font-weight: 600; color: var(--text-primary); }
+
+  .custom-body input {
+    display: block;
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 12px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-inset);
+    color: var(--text-primary);
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+  }
+
+  .custom-body input:focus { outline: none; border-color: var(--accent-blue); }
 </style>
