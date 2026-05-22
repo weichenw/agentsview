@@ -56,39 +56,45 @@
     }
   }
 
-  function parseCronIntoBuilder(cron: string) {
-    const trimmed = cron.trim();
-    const parts = trimmed.split(/\s+/);
-    if (parts.length !== 5) return;
-    const [min, hour, dom, , dow] = parts;
-    // minute interval: */N * * * *
+  function parseDays(dow: string): number[] {
+    const days: number[] = [];
+    for (const part of dow.split(",")) {
+      if (part.includes("-")) {
+        const [start, end] = part.split("-").map((d) => parseInt(d, 10));
+        for (let i = start; i <= end; i++) days.push(i);
+      } else {
+        const d = parseInt(part, 10);
+        if (!isNaN(d)) days.push(d);
+      }
+    }
+    return days.filter((d) => d >= 0 && d <= 6);
+  }
+
+  function parseCronToBuilder(cron: string): { mode: "minute"; interval: number } | { mode: "hourly"; minute: number } | { mode: "daily"; hour: string; minute: string } | { mode: "weekly"; hour: string; minute: string; days: number[] } | { mode: "monthly"; hour: string; minute: string; day: number } | null {
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length !== 5) return null;
+    const [min, hour, dom, _month, dow] = parts;
+
+    // every minute interval: */N * * * *
     const minIntervalMatch = min.match(/^\*\/(\d+)$/);
     if (minIntervalMatch && hour === "*" && dom === "*" && dow === "*") {
       const n = parseInt(minIntervalMatch[1], 10);
-      if ([1, 5, 15, 30].includes(n)) {
-        bMode = "minute"; bMinuteInterval = n as 1 | 5 | 15 | 30; return;
-      }
+      if ([1, 5, 15, 30].includes(n)) return { mode: "minute", interval: n };
     }
-    // hourly: MM * * * *
-    if (min.match(/^\d{1,2}$/) && hour === "*" && dom === "*" && dow === "*") {
-      bMode = "hourly"; bHourlyMinute = parseInt(min, 10); return;
+
+    if (dow === "*" && dom === "*") {
+      if (hour === "*") return { mode: "hourly", minute: parseInt(min, 10) };
+      return { mode: "daily", hour, minute: min };
     }
-    // weekly: MM HH * * D,D,D
     if (dow !== "*") {
-      const days = dow.split(",").map((d) => parseInt(d, 10)).filter((d) => d >= 0 && d <= 6);
-      if (days.length > 0) {
-        bMode = "weekly"; bTime = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`; bDays = new Set(days); return;
-      }
+      const days = parseDays(dow);
+      if (days.length > 0) return { mode: "weekly", hour, minute: min, days };
     }
-    // monthly: MM HH DD * *
     if (dom !== "*" && dom.match(/^\d{1,2}$/)) {
       const d = parseInt(dom, 10);
-      if (d >= 1 && d <= 31) {
-        bMode = "monthly"; bTime = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`; bMonthlyDay = d; return;
-      }
+      if (d >= 1 && d <= 31) return { mode: "monthly", hour, minute: min, day: d };
     }
-    // daily fallback: MM HH * * *
-    bMode = "daily"; bTime = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
+    return null;
   }
 
   // Sync builder → formCron when builder tab is active
@@ -159,11 +165,30 @@
   }
 
   function fillForm(job: Job) {
-    formName = job.name; formCron = job.cron; formAgent = job.agent;
+    formName = job.name; formAgent = job.agent;
     formPrompt = job.prompt; formModel = job.model ?? "";
     formWorkingDir = job.working_dir; formSpawnMode = job.spawn_mode;
     formInheritContext = job.inherit_project_context; formEnabled = job.enabled;
-    parseCronIntoBuilder(job.cron);
+
+    const parsed = parseCronToBuilder(job.cron);
+    if (parsed) {
+      cronTab = "builder";
+      switch (parsed.mode) {
+        case "minute":
+          bMode = "minute"; bMinuteInterval = parsed.interval as 1 | 5 | 15 | 30; break;
+        case "hourly":
+          bMode = "hourly"; bHourlyMinute = parsed.minute; break;
+        case "daily":
+          bMode = "daily"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; break;
+        case "weekly":
+          bMode = "weekly"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; bDays = new Set(parsed.days); break;
+        case "monthly":
+          bMode = "monthly"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; bMonthlyDay = parsed.day; break;
+      }
+    } else {
+      cronTab = "custom";
+      formCron = job.cron;
+    }
   }
 
   onMount(() => loadJobs());
@@ -325,7 +350,7 @@
             Cron Schedule
             <div class="cron-builder-card">
               <div class="cron-tabs">
-                <button class="tab-btn" class:active={cronTab === "builder"} onclick={() => { cronTab = "builder"; parseCronIntoBuilder(formCron); }}>Builder</button>
+                <button class="tab-btn" class:active={cronTab === "builder"} onclick={() => { const parsed = parseCronToBuilder(formCron); if (parsed) { cronTab = "builder"; switch (parsed.mode) { case "minute": bMode = "minute"; bMinuteInterval = parsed.interval as 1 | 5 | 15 | 30; break; case "hourly": bMode = "hourly"; bHourlyMinute = parsed.minute; break; case "daily": bMode = "daily"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; break; case "weekly": bMode = "weekly"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; bDays = new Set(parsed.days); break; case "monthly": bMode = "monthly"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; bMonthlyDay = parsed.day; break; } } else { cronTab = "custom"; } }}>Builder</button>
                 <button class="tab-btn" class:active={cronTab === "custom"} onclick={() => cronTab = "custom"}>Custom</button>
               </div>
               {#if cronTab === "builder"}
@@ -460,7 +485,7 @@
             Cron Schedule
             <div class="cron-builder-card">
               <div class="cron-tabs">
-                <button class="tab-btn" class:active={cronTab === "builder"} onclick={() => { cronTab = "builder"; parseCronIntoBuilder(formCron); }}>Builder</button>
+                <button class="tab-btn" class:active={cronTab === "builder"} onclick={() => { const parsed = parseCronToBuilder(formCron); if (parsed) { cronTab = "builder"; switch (parsed.mode) { case "minute": bMode = "minute"; bMinuteInterval = parsed.interval as 1 | 5 | 15 | 30; break; case "hourly": bMode = "hourly"; bHourlyMinute = parsed.minute; break; case "daily": bMode = "daily"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; break; case "weekly": bMode = "weekly"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; bDays = new Set(parsed.days); break; case "monthly": bMode = "monthly"; bTime = `${parsed.hour.padStart(2, "0")}:${parsed.minute.padStart(2, "0")}`; bMonthlyDay = parsed.day; break; } } else { cronTab = "custom"; } }}>Builder</button>
                 <button class="tab-btn" class:active={cronTab === "custom"} onclick={() => cronTab = "custom"}>Custom</button>
               </div>
               {#if cronTab === "builder"}
