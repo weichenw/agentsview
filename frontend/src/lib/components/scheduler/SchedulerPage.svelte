@@ -3,12 +3,14 @@
   import * as api from "../../../api/scheduler.js";
   import type { Job, SchedulerRun } from "../../../types/scheduler.js";
   import { router } from "../../stores/router.svelte.js";
+  import { toString as cronstrueToString } from "cronstrue";
 
   let jobs: Job[] = $state([]);
   let runs: SchedulerRun[] = $state([]);
   let loading = $state(true);
   let selectedJob: Job | null = $state(null);
   let searchQuery = $state("");
+  let expandedErrors = $state<Set<string>>(new Set());
 
   // Edit/create form state
   let editing = $state(false);
@@ -24,6 +26,8 @@
   let formInheritContext = $state(false);
   let formEnabled = $state(true);
 
+  let formCronPreview = $derived(cronPreview(formCron));
+
   const filteredJobs = $derived(
     searchQuery
       ? jobs.filter((j) =>
@@ -34,14 +38,22 @@
   );
 
   function cronHumanReadable(expr: string): string {
-    const parts = expr.trim().split(/\s+/);
-    if (parts.length === 6) parts.shift();
-    if (parts.length !== 5) return expr;
-    const [min, hour, dom, mon, dow] = parts;
-    if (min === "0" && hour === "7" && dom === "*" && mon === "*" && dow === "*") return "Every day at 7:00 AM";
-    if (min === "0" && hour === "0" && dom === "*" && mon === "*" && dow === "*") return "Every day at midnight";
-    if (min === "0" && hour === "14" && dom === "*" && mon === "*" && dow === "1") return "Every Monday at 2:00 PM";
-    return expr;
+    if (!expr.trim()) return "";
+    try {
+      return cronstrueToString(expr.trim());
+    } catch {
+      return "";
+    }
+  }
+
+  function cronPreview(expr: string): { text: string; error: boolean } {
+    const trimmed = expr.trim();
+    if (!trimmed) return { text: "", error: false };
+    try {
+      return { text: cronstrueToString(trimmed), error: false };
+    } catch {
+      return { text: "Invalid cron expression", error: true };
+    }
   }
 
   function formatRelativeTime(ts: string): string {
@@ -236,8 +248,8 @@
           <label>
             Cron Expression
             <input bind:value={formCron} class="mono" placeholder="0 7 * * *" />
-            {#if formCron}
-              <span class="field-hint">{cronHumanReadable(formCron)}</span>
+            {#if formCronPreview.text}
+              <span class="field-hint" class:cron-error={formCronPreview.error}>{formCronPreview.text}</span>
             {/if}
           </label>
           <label>Agent <input bind:value={formAgent} placeholder="claude" /></label>
@@ -280,8 +292,8 @@
           <label>
             Cron Expression
             <input bind:value={formCron} class="mono" />
-            {#if formCron}
-              <span class="field-hint">{cronHumanReadable(formCron)}</span>
+            {#if formCronPreview.text}
+              <span class="field-hint" class:cron-error={formCronPreview.error}>{formCronPreview.text}</span>
             {/if}
           </label>
           <label>Agent <input bind:value={formAgent} /></label>
@@ -348,7 +360,25 @@
                   <button class="kill-btn" onclick={async () => { try { await api.killRun(run.id); runs = await api.listRuns(selectedJob!.id, 20); } catch { /* ignore */ }}} title="Kill this run">✕</button>
                 {/if}
                 {#if run.error}
-                  <span class="run-error" title={run.error}>{run.error}</span>
+                  {#if run.error.length <= 60}
+                    <span class="run-error">{run.error}</span>
+                  {:else}
+                    {@const isExpanded = expandedErrors.has(run.id)}
+                    <span class="run-error">
+                      {isExpanded ? run.error : run.error.slice(0, 60) + "…"}
+                    </span>
+                    <button
+                      class="details-btn"
+                      onclick={() => {
+                        const next = new Set(expandedErrors);
+                        if (next.has(run.id)) next.delete(run.id);
+                        else next.add(run.id);
+                        expandedErrors = next;
+                      }}
+                    >
+                      {isExpanded ? "less" : "details"}
+                    </button>
+                  {/if}
                 {/if}
               </div>
             {/each}
@@ -920,12 +950,26 @@
     background: color-mix(in srgb, var(--accent-red) 15%, transparent);
   }
 
+  .cron-error { color: var(--accent-red, #ef4444); }
+
+  .details-btn {
+    font-size: 10px;
+    color: var(--accent-blue);
+    background: none;
+    border: 1px solid var(--border-muted);
+    border-radius: 3px;
+    padding: 1px 4px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.1s;
+  }
+
+  .details-btn:hover {
+    background: var(--bg-surface-hover);
+  }
+
   .run-error {
     color: var(--accent-red);
     font-size: 10px;
-    max-width: 160px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 </style>
