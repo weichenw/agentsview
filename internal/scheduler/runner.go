@@ -195,9 +195,17 @@ func (r *Runner) runSubprocess(job *Job, run *SchedulerRun) {
 	if job.WorkingDir != "" {
 		cmd.Dir = job.WorkingDir
 	}
-	if telegramLabel != "" {
-		cmd.Env = append(os.Environ(), "PI_TELEGRAM_LABEL="+telegramLabel)
+	env := os.Environ()
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = "PATH=/opt/homebrew/bin:" + e[5:]
+			break
+		}
 	}
+	if telegramLabel != "" {
+		env = append(env, "PI_TELEGRAM_LABEL="+telegramLabel)
+	}
+	cmd.Env = env
 
 	// Cap output at 10MB.
 	var stdout, stderr bytes.Buffer
