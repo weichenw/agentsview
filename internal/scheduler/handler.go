@@ -327,6 +327,49 @@ func (h *Handler) setEnabled(w http.ResponseWriter, id string, enabled bool) {
 	}
 }
 
+// GetSettings handles GET /api/v1/scheduler/settings
+func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.store.LoadSettings()
+	if err != nil {
+		log.Printf("scheduler: LoadSettings: %v", err)
+		writeJSON(w, http.StatusOK, &SchedulerSettings{Timezone: defaultTimezone})
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+// UpdateSettings handles POST /api/v1/scheduler/settings
+func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var settings SchedulerSettings
+	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if settings.Timezone == "" {
+		writeError(w, http.StatusBadRequest, "timezone is required")
+		return
+	}
+	// Validate timezone by attempting to load it.
+	if settings.Timezone != "Local" {
+		if _, err := time.LoadLocation(settings.Timezone); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid timezone: %v", err))
+			return
+		}
+	}
+	if err := h.store.SaveSettings(&settings); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+
+	// Restart the scheduler with the new timezone.
+	if h.sched != nil {
+		if err := h.sched.SetTimezone(settings.Timezone); err != nil {
+			log.Printf("scheduler: SetTimezone %q: %v", settings.Timezone, err)
+		}
+	}
+}
+
 func validateJobInput(id, name, cron, agent, prompt, spawnMode string) error {
 	if id == "" {
 		return errors.New("id is required")

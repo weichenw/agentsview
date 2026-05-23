@@ -40,6 +40,10 @@ export interface SchedulerRun {
   error?: string;
 }
 
+export interface SchedulerSettings {
+  timezone: string;
+}
+
 /** Response from POST /api/v1/scheduler/jobs/{id}/run */
 export interface RunResponse {
   run_id: string;

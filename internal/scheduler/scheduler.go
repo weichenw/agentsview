@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -17,12 +18,15 @@ type Scheduler struct {
 	entries map[string]cron.EntryID // job ID -> cron entry ID
 }
 
-// New creates a Scheduler. Call Start() to begin execution.
-func New(store *Store, runner *Runner) *Scheduler {
+// New creates a Scheduler with the given timezone. Call Start() to begin execution.
+func New(store *Store, runner *Runner, loc *time.Location) *Scheduler {
+	if loc == nil {
+		loc = time.Local
+	}
 	return &Scheduler{
 		store:   store,
 		runner:  runner,
-		cron:    cron.New(cron.WithLocation(time.Local)),
+		cron:    cron.New(cron.WithLocation(loc)),
 		entries: make(map[string]cron.EntryID),
 	}
 }
@@ -40,7 +44,7 @@ func (s *Scheduler) Start() {
 	}
 
 	s.cron.Start()
-	log.Printf("scheduler: started with %d active job(s)", len(s.entries))
+	log.Printf("scheduler: started with timezone %s, %d active job(s)", s.cron.Location().String(), len(s.entries))
 }
 
 // Stop gracefully shuts down the cron runner, waiting for any
@@ -73,6 +77,43 @@ func (s *Scheduler) Reload(id string) {
 	}
 
 	s.addJobLocked(job)
+}
+
+// SetTimezone loads the named timezone and restarts the cron runner with it.
+// Re-registers all enabled jobs after the restart.
+func (s *Scheduler) SetTimezone(tz string) error {
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return fmt.Errorf("invalid timezone %q: %w", tz, err)
+	}
+	s.RestartWithLocation(loc)
+	return nil
+}
+
+// RestartWithLocation stops the cron runner, recreates it with the
+// given location, and re-registers all enabled jobs.
+func (s *Scheduler) RestartWithLocation(loc *time.Location) {
+	if loc == nil {
+		loc = time.Local
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ctx := s.cron.Stop()
+	<-ctx.Done()
+
+	s.cron = cron.New(cron.WithLocation(loc))
+	s.entries = make(map[string]cron.EntryID)
+
+	for _, job := range s.store.List() {
+		if !job.Enabled {
+			continue
+		}
+		s.addJobLocked(&job)
+	}
+
+	s.cron.Start()
+	log.Printf("scheduler: restarted with timezone %s, %d active job(s)", loc.String(), len(s.entries))
 }
 
 // addJobLocked registers a job with the cron scheduler.

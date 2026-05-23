@@ -262,3 +262,14 @@ func (s *Store) ListRuns(jobID string, limit int) ([]SchedulerRun, error) {
 	}
 	return runs, nil
 }
+
+// LoadSettings reads scheduler-settings.json from the data dir.
+// Returns a default settings struct if the file does not exist.
+func (s *Store) LoadSettings() (*SchedulerSettings, error) {
+	return LoadSettings(filepath.Dir(s.filePath))
+}
+
+// SaveSettings atomically writes scheduler-settings.json to the data dir.
+func (s *Store) SaveSettings(settings *SchedulerSettings) error {
+	return SaveSettings(filepath.Dir(s.filePath), settings)
+}

@@ -1,5 +1,5 @@
 import { getBase, getAuthToken, ApiError } from "../lib/api/client.js";
-import type { Job, JobFormData, SchedulerRun, RunResponse } from "../types/scheduler.js";
+import type { Job, JobFormData, SchedulerRun, RunResponse, SchedulerSettings } from "../types/scheduler.js";
 
 function authHeaders(init?: RequestInit): RequestInit {
   const token = getAuthToken();
@@ -92,4 +92,16 @@ export async function listRuns(jobId: string, limit?: number): Promise<Scheduler
     `/scheduler/runs${buildQuery({ job_id: jobId, limit })}`,
   );
   return res.runs;
+}
+
+export async function getSettings(): Promise<SchedulerSettings> {
+  return fetchJSON<SchedulerSettings>("/scheduler/settings");
+}
+
+export async function updateSettings(data: SchedulerSettings): Promise<SchedulerSettings> {
+  return fetchJSON<SchedulerSettings>("/scheduler/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
 }

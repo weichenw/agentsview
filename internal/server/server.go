@@ -146,7 +146,19 @@ func New(
 				s.engine.SyncSingleSession(sessionID)
 			}
 		})
-		s.scheduler = scheduler.New(schedStore, runner)
+
+		loc := time.Local
+		if settings, err := schedStore.LoadSettings(); err == nil && settings.Timezone != "" {
+			if settings.Timezone != "Local" {
+				if l, err := time.LoadLocation(settings.Timezone); err == nil {
+					loc = l
+				} else {
+					log.Printf("scheduler: invalid timezone %q: %v", settings.Timezone, err)
+				}
+			}
+		}
+
+		s.scheduler = scheduler.New(schedStore, runner, loc)
 		s.schedulerHandler = scheduler.NewHandler(schedStore, runner, s.scheduler)
 	}
 
@@ -413,6 +425,14 @@ func (s *Server) routes() {
 		s.mux.Handle(
 			"POST /api/v1/scheduler/runs/{id}/kill",
 			s.withTimeout(http.HandlerFunc(s.schedulerHandler.KillRun)),
+		)
+		s.mux.Handle(
+			"GET /api/v1/scheduler/settings",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.GetSettings)),
+		)
+		s.mux.Handle(
+			"POST /api/v1/scheduler/settings",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.UpdateSettings)),
 		)
 	}
 

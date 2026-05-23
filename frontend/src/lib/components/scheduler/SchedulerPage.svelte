@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "../../../api/scheduler.js";
-  import type { Job, SchedulerRun } from "../../../types/scheduler.js";
+  import type { Job, SchedulerRun, SchedulerSettings } from "../../../types/scheduler.js";
   import { router } from "../../stores/router.svelte.js";
   import { toString as cronstrueToString } from "cronstrue";
 
@@ -11,6 +11,24 @@
   let selectedJob: Job | null = $state(null);
   let searchQuery = $state("");
   let expandedErrors = $state<Set<string>>(new Set());
+
+  // Timezone selector state
+  let timezone = $state("Australia/Sydney");
+  let tzSaved = $state(false);
+  const TIMEZONES = [
+    "Australia/Sydney",
+    "Australia/Melbourne",
+    "Australia/Perth",
+    "America/New_York",
+    "America/Los_Angeles",
+    "America/Chicago",
+    "Europe/London",
+    "Europe/Paris",
+    "Asia/Tokyo",
+    "Asia/Singapore",
+    "Asia/Shanghai",
+    "UTC",
+  ];
 
   // Edit/create form state
   let editing = $state(false);
@@ -262,6 +280,22 @@
     catch { runs = []; }
   }
 
+  async function loadTimezone() {
+    try {
+      const settings: SchedulerSettings = await api.getSettings();
+      timezone = settings.timezone || "Local";
+    } catch { /* ignore */ }
+  }
+
+  async function handleTimezoneChange(newTz: string) {
+    try {
+      await api.updateSettings({ timezone: newTz });
+      timezone = newTz;
+      tzSaved = true;
+      setTimeout(() => { tzSaved = false; }, 2000);
+    } catch { /* ignore */ }
+  }
+
   function editJob(job: Job) {
     selectedJob = job;
     fillForm(job);
@@ -330,6 +364,17 @@
           </button>
         {/each}
       {/if}
+    </div>
+    <div class="timezone-section">
+      <label>
+        Timezone
+        <select value={timezone} onchange={(e) => handleTimezoneChange((e.currentTarget as HTMLSelectElement).value)}>
+          {#each TIMEZONES as tz}
+            <option value={tz}>{tz}</option>
+          {/each}
+        </select>
+      </label>
+      {#if tzSaved}<span class="tz-confirm">✓ saved</span>{/if}
     </div>
   </div>
 
@@ -797,6 +842,7 @@
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+    min-height: 0;
   }
 
   .job-row {
@@ -1385,4 +1431,35 @@
   }
 
   .custom-body input:focus { outline: none; border-color: var(--accent-blue); }
+
+  .timezone-section {
+    padding: 10px;
+    border-top: 1px solid var(--border-default);
+    flex-shrink: 0;
+  }
+  .timezone-section label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .timezone-section select {
+    width: 100%;
+    padding: 4px 6px;
+    font-size: 11px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-inset);
+    color: var(--text-primary);
+    box-sizing: border-box;
+  }
+  .tz-confirm {
+    font-size: 10px;
+    color: var(--accent-green, #22c55e);
+    margin-top: 4px;
+    display: block;
+  }
 </style>
