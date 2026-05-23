@@ -3,6 +3,7 @@ package scheduler
 import (
 	"log"
 	"sync"
+	"time"
 
 	"github.com/robfig/cron/v3"
 )
@@ -21,7 +22,7 @@ func New(store *Store, runner *Runner) *Scheduler {
 	return &Scheduler{
 		store:   store,
 		runner:  runner,
-		cron:    cron.New(cron.WithSeconds()),
+		cron:    cron.New(cron.WithLocation(time.Local)),
 		entries: make(map[string]cron.EntryID),
 	}
 }
