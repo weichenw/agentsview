@@ -316,15 +316,15 @@
     <div class="memory-panel">
       <div class="memory-section-title">Legend</div>
       {#each [
-        { type: "session",  label: "Session",  shape: "●" },
-        { type: "memory",   label: "Memory",   shape: "●" },
-        { type: "project",  label: "Project",  shape: "■" },
-        { type: "domain",   label: "Domain",   shape: "◆" },
-        { type: "category", label: "Category", shape: "▲" },
-        { type: "hub",      label: "Hub",      shape: "★" },
+        { type: "session",  label: "Session" },
+        { type: "memory",   label: "Memory" },
+        { type: "project",  label: "Project" },
+        { type: "domain",   label: "Domain" },
+        { type: "category", label: "Category" },
+        { type: "hub",      label: "Hub" },
       ] as item}
         <div class="memory-legend-item">
-          <span class="memory-legend-shape" style="color: {colorMap[item.type]}">{item.shape}</span>
+          <span class="memory-legend-shape" style="color: {colorMap[item.type]}">●</span>
           <span class="memory-legend-swatch" style="background: {colorMap[item.type]}"></span>
           <span class="memory-legend-label">{item.label}</span>
         </div>
