@@ -314,6 +314,23 @@
       {/each}
     </div>
     <div class="memory-panel">
+      <div class="memory-section-title">Legend</div>
+      {#each [
+        { type: "session",  label: "Session",  shape: "●" },
+        { type: "memory",   label: "Memory",   shape: "●" },
+        { type: "project",  label: "Project",  shape: "■" },
+        { type: "domain",   label: "Domain",   shape: "◆" },
+        { type: "category", label: "Category", shape: "▲" },
+        { type: "hub",      label: "Hub",      shape: "★" },
+      ] as item}
+        <div class="memory-legend-item">
+          <span class="memory-legend-shape" style="color: {colorMap[item.type]}">{item.shape}</span>
+          <span class="memory-legend-swatch" style="background: {colorMap[item.type]}"></span>
+          <span class="memory-legend-label">{item.label}</span>
+        </div>
+      {/each}
+    </div>
+    <div class="memory-panel">
       <div class="memory-section-title">Stats</div>
       {#if graphData.stats}
         <div class="memory-stat">{graphData.stats.nodes} nodes</div>
@@ -466,6 +483,37 @@
     letter-spacing: 0.04em;
     color: var(--text-muted);
     margin-bottom: 6px;
+  }
+
+  .memory-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+    color: var(--text-primary);
+  }
+
+  .memory-legend-shape {
+    font-size: 14px;
+    line-height: 1;
+    width: 16px;
+    text-align: center;
+    display: inline-block;
+  }
+
+  .memory-legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    display: inline-block;
+    border: 1px solid var(--border-default);
+  }
+
+  .memory-legend-label {
+    font-size: 11px;
+    color: var(--text-secondary);
   }
 
   .memory-stat {
