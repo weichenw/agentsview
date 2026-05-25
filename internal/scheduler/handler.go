@@ -391,6 +391,8 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		"active_jobs":  activeJobs,
 	})
 }
+
+func validateJobInput(id, name, cron, agent, prompt, spawnMode string) error {
 	if id == "" {
 		return errors.New("id is required")
 	}
