@@ -356,30 +356,32 @@
         </label>
       {/each}
     </div>
-    <div class="memory-panel">
-      <div class="memory-section-title">Legend</div>
-      {#each [
-        { type: "session",  label: "Session" },
-        { type: "memory",   label: "Memory" },
-        { type: "project",  label: "Project" },
-        { type: "domain",   label: "Domain" },
-        { type: "category", label: "Category" },
-        { type: "hub",      label: "Hub" },
-      ] as item}
-        <div class="memory-legend-item">
-          <span class="memory-legend-shape" style="color: {colorMap[item.type]}">●</span>
-          <span class="memory-legend-label">{item.label}</span>
-        </div>
-      {/each}
-    </div>
-    <div class="memory-panel">
-      <div class="memory-section-title">Stats</div>
-      {#if graphData.stats}
-        <div class="memory-stat">{graphData.stats.nodes} nodes</div>
-        <div class="memory-stat">{graphData.stats.links} links</div>
-        <div class="memory-stat">{graphData.stats.messages} messages</div>
-        <div class="memory-stat">{graphData.stats.memories} memories</div>
-      {/if}
+    <div class="memory-panel-row">
+      <div class="memory-panel memory-panel-half">
+        <div class="memory-section-title">Legend</div>
+        {#each [
+          { type: "session",  label: "Session" },
+          { type: "memory",   label: "Memory" },
+          { type: "project",  label: "Project" },
+          { type: "domain",   label: "Domain" },
+          { type: "category", label: "Category" },
+          { type: "hub",      label: "Hub" },
+        ] as item}
+          <div class="memory-legend-item">
+            <span class="memory-legend-shape" style="color: {colorMap[item.type]}">●</span>
+            <span class="memory-legend-label">{item.label}</span>
+          </div>
+        {/each}
+      </div>
+      <div class="memory-panel memory-panel-half">
+        <div class="memory-section-title">Stats</div>
+        {#if graphData.stats}
+          <div class="memory-stat">{graphData.stats.nodes} nodes</div>
+          <div class="memory-stat">{graphData.stats.links} links</div>
+          <div class="memory-stat">{graphData.stats.messages} messages</div>
+          <div class="memory-stat">{graphData.stats.memories} memories</div>
+        {/if}
+      </div>
     </div>
     {#if showDetail && detailNode}
       <div class="memory-detail">
@@ -635,6 +637,22 @@
     border-bottom: 1px solid var(--border-default);
   }
 
+  .memory-panel-row {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-default);
+  }
+
+  .memory-panel-half {
+    flex: 1 1 50%;
+    min-width: 0;
+    border-bottom: none;
+  }
+
+  .memory-panel-half:first-child {
+    border-right: 1px solid var(--border-default);
+  }
+
   .memory-section-title {
     font-size: 10px;
     font-weight: 600;
@@ -647,23 +665,27 @@
   .memory-legend-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 3px 0;
-    font-size: 12px;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 11px;
     color: var(--text-primary);
+    white-space: nowrap;
   }
 
   .memory-legend-shape {
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
-    width: 16px;
+    width: 14px;
     text-align: center;
     display: inline-block;
+    flex-shrink: 0;
   }
 
   .memory-legend-label {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .memory-stat {
