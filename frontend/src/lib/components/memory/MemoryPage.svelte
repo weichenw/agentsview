@@ -3,6 +3,7 @@
   import { router } from "../../stores/router.svelte.ts";
 
   let graphData = $state({ nodes: [] as any[], links: [] as any[], stats: {} as any });
+  let originalLinks: any[] = []; // unmutated copy before D3 replaces source/target with objects
   let loading = $state(true);
   let error = $state("");
   let selectedNodeId = $state<string | null>(null);
@@ -66,6 +67,7 @@
       const res = await fetch(`/api/v1/memory/graph?types=${encodeURIComponent(types)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       graphData = await res.json();
+      originalLinks = graphData.links.map((l: any) => ({ ...l }));
       loading = false;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -281,11 +283,9 @@
 
   function getLinkedNodeIds(nodeId: string): string[] {
     const ids = new Set<string>();
-    for (const l of graphData.links) {
-      const s = typeof l.source === 'string' ? l.source : l.source?.id;
-      const t = typeof l.target === 'string' ? l.target : l.target?.id;
-      if (s === nodeId && t) ids.add(t);
-      if (t === nodeId && s) ids.add(s);
+    for (const l of originalLinks) {
+      if (l.source === nodeId && l.target) ids.add(l.target);
+      if (l.target === nodeId && l.source) ids.add(l.source);
     }
     return [...ids];
   }
