@@ -279,6 +279,49 @@
     router.navigateToSession(sessionId);
   }
 
+  function getLinkedNodeIds(nodeId: string): string[] {
+    const ids = new Set<string>();
+    for (const l of graphData.links) {
+      const s = typeof l.source === 'string' ? l.source : l.source?.id;
+      const t = typeof l.target === 'string' ? l.target : l.target?.id;
+      if (s === nodeId && t) ids.add(t);
+      if (t === nodeId && s) ids.add(s);
+    }
+    return [...ids];
+  }
+
+  function getLinkedNodes(nodeId: string): any[] {
+    const linkedIds = getLinkedNodeIds(nodeId);
+    return graphData.nodes.filter((n: any) => linkedIds.includes(n.id));
+  }
+
+  function getMemorySource(node: any): string {
+    if (node.source === "extended") return "Extended (SQLite)";
+    if (node.source === "core") return "Core (markdown)";
+    return node.source || "Unknown";
+  }
+
+  function getMemoryCreated(node: any): string {
+    if (!node.raw) return node.time || "";
+    // Raw may be MemoryRaw (created is string or object) or MdMemory
+    const raw = node.raw;
+    if (raw.created) {
+      if (typeof raw.created === "string") return raw.created;
+      if (raw.created.String) return raw.created.String;
+    }
+    return node.time || "";
+  }
+
+  function getMemoryLinkedProjectsSessions(node: any): string[] {
+    const linked = getLinkedNodes(node.id);
+    const names: string[] = [];
+    for (const n of linked) {
+      if (n.type === "project") names.push(n.label || n.id.replace("proj:", ""));
+      if (n.type === "session") names.push(n.label || n.id.replace("s:", ""));
+    }
+    return names;
+  }
+
   $effect(() => {
     if (!searchQuery) clearFilter();
     else filteredNodes();
@@ -352,34 +395,151 @@
                 → View session
               </button>
             </div>
-          {/if}
-          <div class="memory-field">
-            <div class="memory-field-label">ID</div>
-            <div class="memory-field-value">{detailNode.id}</div>
-          </div>
-          {#if detailNode.count}
+            {#if detailNode.raw?.project}
+              <div class="memory-field">
+                <div class="memory-field-label">Project</div>
+                <div class="memory-field-value">{detailNode.raw.project}</div>
+              </div>
+            {/if}
             <div class="memory-field">
-              <div class="memory-field-label">Count</div>
-              <div class="memory-field-value">{detailNode.count}</div>
+              <div class="memory-field-label">Messages</div>
+              <div class="memory-field-value">{detailNode.count || 0}</div>
             </div>
-          {/if}
-          {#if detailNode.time}
+            {@const linkedMems = getLinkedNodes(detailNode.id).filter((n: any) => n.type === 'memory')}
+            {#if linkedMems.length > 0}
+              <div class="memory-field">
+                <div class="memory-field-label">Linked Memories ({linkedMems.length})</div>
+                <div class="memory-linked-list">
+                  {#each linkedMems.slice(0, 20) as m}
+                    <div class="memory-linked-item" onclick={() => selectNode(m)}>{m.label}</div>
+                  {/each}
+                  {#if linkedMems.length > 20}
+                    <div class="memory-linked-more">+{linkedMems.length - 20} more</div>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          {:else if detailNode.type === "memory"}
             <div class="memory-field">
-              <div class="memory-field-label">Time</div>
-              <div class="memory-field-value">{detailNode.time}</div>
+              <div class="memory-field-label">Source</div>
+              <div class="memory-field-value">
+                {detailNode.source === 'extended' ? 'Extended (SQLite)' : detailNode.source === 'core' ? 'Core (Markdown)' : detailNode.source || 'Unknown'}
+              </div>
             </div>
-          {/if}
-          {#if detailNode.db}
+            {#if detailNode.db}
+              <div class="memory-field">
+                <div class="memory-field-label">Database</div>
+                <div class="memory-field-value">{detailNode.db}</div>
+              </div>
+            {/if}
             <div class="memory-field">
-              <div class="memory-field-label">Database</div>
-              <div class="memory-field-value">{detailNode.db}</div>
+              <div class="memory-field-label">Label</div>
+              <div class="memory-field-value">{detailNode.label}</div>
             </div>
-          {/if}
-          {#if detailNode.raw && detailNode.raw.content}
+            {#if detailNode.time}
+              <div class="memory-field">
+                <div class="memory-field-label">Created</div>
+                <div class="memory-field-value">{detailNode.time}</div>
+              </div>
+            {/if}
+            {@const linkedOthers = getLinkedNodes(detailNode.id).filter((n: any) => n.type !== 'memory')}
+            {#if linkedOthers.length > 0}
+              <div class="memory-field">
+                <div class="memory-field-label">Linked Projects/Sessions</div>
+                <div class="memory-linked-list">
+                  {#each linkedOthers as n}
+                    <div class="memory-linked-item" onclick={() => selectNode(n)}>
+                      <span style="color: {colorMap[n.type]}">●</span> {n.label}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if detailNode.raw?.content}
+              <div class="memory-field">
+                <div class="memory-field-label">Content</div>
+                <pre class="memory-field-pre">{detailNode.raw.content.slice(0, 2000)}</pre>
+              </div>
+            {/if}
+          {:else if detailNode.type === "category" || detailNode.type === "domain"}
             <div class="memory-field">
-              <div class="memory-field-label">Content</div>
-              <pre class="memory-field-pre">{detailNode.raw.content.slice(0, 2000)}</pre>
+              <div class="memory-field-label">{detailNode.type === 'category' ? 'Category' : 'Domain'}</div>
+              <div class="memory-field-value">{detailNode.label}</div>
             </div>
+            {@const linkedMems = getLinkedNodes(detailNode.id).filter((n: any) => n.type === 'memory')}
+            <div class="memory-field">
+              <div class="memory-field-label">Memory Count</div>
+              <div class="memory-field-value">{linkedMems.length}</div>
+            </div>
+            {#if linkedMems.length > 0}
+              <div class="memory-field">
+                <div class="memory-field-label">Linked Memories</div>
+                <div class="memory-linked-list">
+                  {#each linkedMems.slice(0, 30) as m}
+                    <div class="memory-linked-item" onclick={() => selectNode(m)}>{m.label}</div>
+                  {/each}
+                  {#if linkedMems.length > 30}
+                    <div class="memory-linked-more">+{linkedMems.length - 30} more</div>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          {:else if detailNode.type === "project"}
+            <div class="memory-field">
+              <div class="memory-field-label">Project</div>
+              <div class="memory-field-value">{detailNode.label}</div>
+            </div>
+            {@const linkedMems = getLinkedNodes(detailNode.id).filter((n: any) => n.type === 'memory')}
+            {@const linkedSess = getLinkedNodes(detailNode.id).filter((n: any) => n.type === 'session')}
+            <div class="memory-field">
+              <div class="memory-field-label">Memory Count</div>
+              <div class="memory-field-value">{linkedMems.length}</div>
+            </div>
+            <div class="memory-field">
+              <div class="memory-field-label">Session Count</div>
+              <div class="memory-field-value">{linkedSess.length}</div>
+            </div>
+            {#if linkedMems.length > 0}
+              <div class="memory-field">
+                <div class="memory-field-label">Linked Memories</div>
+                <div class="memory-linked-list">
+                  {#each linkedMems.slice(0, 20) as m}
+                    <div class="memory-linked-item" onclick={() => selectNode(m)}>{m.label}</div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if linkedSess.length > 0}
+              <div class="memory-field">
+                <div class="memory-field-label">Linked Sessions</div>
+                <div class="memory-linked-list">
+                  {#each linkedSess.slice(0, 20) as s}
+                    <div class="memory-linked-item" onclick={() => selectNode(s)}>{s.label}</div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          {:else if detailNode.type === "hub"}
+            <div class="memory-field">
+              <div class="memory-field-label">Type</div>
+              <div class="memory-field-value">Hub</div>
+            </div>
+            {@const linkedMems = getLinkedNodes(detailNode.id).filter((n: any) => n.type === 'memory')}
+            <div class="memory-field">
+              <div class="memory-field-label">Memory Count</div>
+              <div class="memory-field-value">{linkedMems.length}</div>
+            </div>
+          {:else}
+            <div class="memory-field">
+              <div class="memory-field-label">ID</div>
+              <div class="memory-field-value">{detailNode.id}</div>
+            </div>
+            {#if detailNode.count}
+              <div class="memory-field">
+                <div class="memory-field-label">Count</div>
+                <div class="memory-field-value">{detailNode.count}</div>
+              </div>
+            {/if}
           {/if}
         </div>
       </div>
@@ -602,6 +762,34 @@
 
   .memory-session-link:hover {
     background: var(--accent-blue-hover, #2563eb);
+  }
+
+  .memory-linked-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .memory-linked-item {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-inset);
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s;
+    word-break: break-word;
+  }
+
+  .memory-linked-item:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+  }
+
+  .memory-linked-more {
+    font-size: 10px;
+    color: var(--text-muted);
+    padding: 2px 8px;
   }
 
   .memory-graph-wrap {
