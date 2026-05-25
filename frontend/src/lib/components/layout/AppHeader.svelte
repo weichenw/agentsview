@@ -251,6 +251,19 @@
 
     <button
       class="nav-btn"
+      class:active={router.route === "memory"}
+      onclick={() => router.navigate("memory")}
+      title="Memory Graph"
+      aria-label="Memory Graph"
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M6 1H1v14h5V1zm9 0h-5v5h5V1zm0 9h-5v5h5v-5zM6 6H1v3h5V6z"/>
+      </svg>
+      <span class="nav-label">Memory</span>
+    </button>
+
+    <button
+      class="nav-btn"
       class:active={router.route === "usage"}
       onclick={() => router.navigate("usage")}
       title="Token Usage"

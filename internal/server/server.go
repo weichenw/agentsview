@@ -14,6 +14,7 @@ import (
 	gosync "sync"
 	"time"
 
+	"go.kenn.io/agentsview/internal/memory"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
@@ -71,6 +72,9 @@ type Server struct {
 
 	// schedulerHandler handles scheduler REST API endpoints.
 	schedulerHandler *scheduler.Handler
+
+	// memoryHandler serves the memory graph REST API.
+	memoryHandler *memory.Handler
 
 	// scheduler is the cron-based job scheduler.
 	scheduler *scheduler.Scheduler
@@ -160,6 +164,7 @@ func New(
 
 		s.scheduler = scheduler.New(schedStore, runner, loc)
 		s.schedulerHandler = scheduler.NewHandler(schedStore, runner, s.scheduler)
+		s.memoryHandler = memory.NewHandler(&cfg)
 	}
 
 	for _, opt := range opts {
@@ -444,6 +449,21 @@ func (s *Server) routes() {
 		s.mux.Handle(
 			"GET /api/v1/scheduler/health",
 			s.withTimeout(http.HandlerFunc(s.schedulerHandler.Health)),
+		)
+	}
+
+	if s.memoryHandler != nil {
+		s.mux.Handle(
+			"GET /api/v1/memory/graph",
+			s.withTimeout(http.HandlerFunc(s.memoryHandler.Graph)),
+		)
+		s.mux.Handle(
+			"GET /api/v1/memory/meta",
+			s.withTimeout(http.HandlerFunc(s.memoryHandler.Meta)),
+		)
+		s.mux.Handle(
+			"GET /api/v1/memory/debug",
+			s.withTimeout(http.HandlerFunc(s.memoryHandler.Debug)),
 		)
 	}
 
