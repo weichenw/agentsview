@@ -447,6 +447,11 @@ func (s *Server) routes() {
 		)
 	}
 
+	s.mux.Handle(
+		"GET /api/v1/logs",
+		s.withTimeout(http.HandlerFunc(s.handleGetLogs)),
+	)
+
 	// SPA fallback: serve embedded frontend
 	// Do not use timeout handler for static assets to avoid buffering.
 	s.mux.Handle("/", http.HandlerFunc(s.handleSPA))

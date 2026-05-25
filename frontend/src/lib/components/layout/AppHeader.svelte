@@ -298,6 +298,11 @@
             onclick={() => { router.navigate("trash"); moreOpen = false; }}>
             Trash
           </button>
+          <button class="more-item" role="menuitem"
+            class:active={router.route === "logs"}
+            onclick={() => { router.navigate("logs"); moreOpen = false; }}>
+            Logs
+          </button>
         </div>
       {/if}
     </div>

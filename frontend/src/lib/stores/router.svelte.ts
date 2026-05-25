@@ -6,7 +6,8 @@ export type Route =
   | "pinned"
   | "trash"
   | "settings"
-  | "scheduler";
+  | "scheduler"
+  | "logs";
 
 const VALID_ROUTES: ReadonlySet<string> = new Set<Route>([
   "sessions",
@@ -17,6 +18,7 @@ const VALID_ROUTES: ReadonlySet<string> = new Set<Route>([
   "trash",
   "settings",
   "scheduler",
+  "logs",
 ]);
 
 const DEFAULT_ROUTE: Route = "sessions";
