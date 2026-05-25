@@ -172,9 +172,9 @@ func BuildGraph(cfg *config.Config, dbs []string, types []string) (*Graph, error
 				c = raw.Target
 			}
 		case MemoryRaw:
-			c = strOrEmpty(raw.Category)
+			c = raw.Category.String
 			if c == "" {
-				c = strOrEmpty(raw.Target)
+				c = raw.Target.String
 			}
 		}
 		if d != "" {
@@ -220,9 +220,9 @@ func BuildGraph(cfg *config.Config, dbs []string, types []string) (*Graph, error
 				c = raw.Target
 			}
 		case MemoryRaw:
-			c = strOrEmpty(raw.Category)
+			c = raw.Category.String
 			if c == "" {
-				c = strOrEmpty(raw.Target)
+				c = raw.Target.String
 			}
 		}
 		if d != "" && activeTypes["domain"] {
@@ -463,8 +463,8 @@ func processPiDB(
 			mid := "m:" + m.ID
 			label := previewLabel(m.Content, 6)
 			if label == "" {
-				if m.Category != nil {
-					label = *m.Category
+				if m.Category.Valid {
+					label = m.Category.String
 				}
 				if label == "" {
 					label = "memory"
@@ -475,18 +475,18 @@ func processPiDB(
 				Type:   "memory",
 				Label:  truncate(label, 48),
 				Count:  1,
-				Time:   strOrEmpty(m.Created),
+				Time:   m.Created.String,
 				DB:     "pi",
 				Raw:    m,
 				Source: "extended",
 			})
-			if m.Project != nil && *m.Project != "" {
+			if m.Project.Valid && m.Project.String != "" {
 				// Auto-create project node for memory's project.
-				addNode(Node{ID: "proj:" + *m.Project, Type: "project", Label: *m.Project, Count: 0})
-				addLink("proj:"+*m.Project, mid, 1)
+				addNode(Node{ID: "proj:" + m.Project.String, Type: "project", Label: m.Project.String, Count: 0})
+				addLink("proj:"+m.Project.String, mid, 1)
 			}
 			for _, sess := range sessionsList {
-				if sess.Project != nil && m.Project != nil && *sess.Project == *m.Project {
+				if sess.Project != nil && m.Project.Valid && *sess.Project == m.Project.String {
 					addLink("s:"+sess.ID, mid, 1)
 				}
 			}
@@ -627,13 +627,6 @@ func newSet(items []string) map[string]bool {
 }
 
 func strPtr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-func strOrEmpty(s *string) string {
 	if s == nil {
 		return ""
 	}
