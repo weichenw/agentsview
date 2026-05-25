@@ -325,7 +325,6 @@
       ] as item}
         <div class="memory-legend-item">
           <span class="memory-legend-shape" style="color: {colorMap[item.type]}">●</span>
-          <span class="memory-legend-swatch" style="background: {colorMap[item.type]}"></span>
           <span class="memory-legend-label">{item.label}</span>
         </div>
       {/each}
@@ -500,15 +499,6 @@
     width: 16px;
     text-align: center;
     display: inline-block;
-  }
-
-  .memory-legend-swatch {
-    width: 12px;
-    height: 12px;
-    border-radius: 2px;
-    flex-shrink: 0;
-    display: inline-block;
-    border: 1px solid var(--border-default);
   }
 
   .memory-legend-label {
