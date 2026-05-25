@@ -434,6 +434,10 @@ func (s *Server) routes() {
 			"POST /api/v1/scheduler/settings",
 			s.withTimeout(http.HandlerFunc(s.schedulerHandler.UpdateSettings)),
 		)
+		s.mux.Handle(
+			"GET /api/v1/scheduler/health",
+			s.withTimeout(http.HandlerFunc(s.schedulerHandler.Health)),
+		)
 	}
 
 	// SPA fallback: serve embedded frontend

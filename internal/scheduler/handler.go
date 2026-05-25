@@ -370,7 +370,27 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func validateJobInput(id, name, cron, agent, prompt, spawnMode string) error {
+// Health handles GET /api/v1/scheduler/health
+// Returns lightweight scheduler status for the status-bar heartbeat indicator.
+func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+	settings, _ := h.store.LoadSettings()
+	if settings == nil {
+		settings = &SchedulerSettings{Timezone: defaultTimezone}
+	}
+
+	activeJobs := 0
+	for _, job := range h.store.List() {
+		if job.Enabled {
+			activeJobs++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"healthy":      h.sched != nil,
+		"timezone":     settings.Timezone,
+		"active_jobs":  activeJobs,
+	})
+}
 	if id == "" {
 		return errors.New("id is required")
 	}

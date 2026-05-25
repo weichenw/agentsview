@@ -13,6 +13,11 @@
   const mod = isMac ? "Cmd" : "Ctrl";
   let relativeTimeTick = $state(0);
 
+  // Scheduler heartbeat status
+  let schedHealthy = $state(false);
+  let schedTimezone = $state("");
+  let schedActiveJobs = $state(0);
+
   let progressText = $derived.by(() => {
     if (!sync.syncing || !sync.progress) return null;
     const p = sync.progress;
@@ -43,7 +48,28 @@
     const interval = window.setInterval(() => {
       relativeTimeTick = Date.now();
     }, RELATIVE_TIME_REFRESH_MS);
-    return () => window.clearInterval(interval);
+
+    // Poll scheduler health every 30s.
+    const pollHealth = async () => {
+      try {
+        const res = await fetch("/api/v1/scheduler/health");
+        if (res.ok) {
+          const data = await res.json();
+          schedHealthy = !!data.healthy;
+          schedTimezone = data.timezone || "";
+          schedActiveJobs = data.active_jobs ?? 0;
+        }
+      } catch {
+        schedHealthy = false;
+      }
+    };
+    pollHealth();
+    const healthInterval = window.setInterval(pollHealth, 30_000);
+
+    return () => {
+      window.clearInterval(interval);
+      window.clearInterval(healthInterval);
+    };
   });
 </script>
 
@@ -87,6 +113,17 @@
       </div>
       <span class="sep">&middot;</span>
     {/if}
+    {#if schedHealthy}
+      <span
+        class="heartbeat-indicator"
+        title="Scheduler active &middot; {schedTimezone} &middot; {schedActiveJobs} job{schedActiveJobs === 1 ? '' : 's'}"
+      >
+        <svg class="heart-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+        </svg>
+      </span>
+      <span class="sep">&middot;</span>
+    {/if}
     {#if sync.updateAvailable && !sync.isDesktop}
       <button
         class="update-available"
@@ -116,7 +153,7 @@
       </span>
     {/if}
     {#if sync.serverVersion}
-      {#if sync.versionMismatch || progressText || sync.lastSync}
+      {#if sync.versionMismatch || progressText || sync.lastSync || schedHealthy}
         <span class="sep">&middot;</span>
       {/if}
       <button
@@ -233,6 +270,27 @@
   .zoom-level:hover {
     background: var(--bg-surface-hover);
     color: var(--text-secondary);
+  }
+
+  .heartbeat-indicator {
+    display: flex;
+    align-items: center;
+    color: var(--accent-red);
+    cursor: default;
+  }
+
+  .heart-icon {
+    width: 12px;
+    height: 12px;
+    animation: heartbeat 1.2s ease-in-out infinite;
+  }
+
+  @keyframes heartbeat {
+    0%, 100% { transform: scale(1); }
+    14% { transform: scale(1.15); }
+    28% { transform: scale(1); }
+    42% { transform: scale(1.15); }
+    70% { transform: scale(1); }
   }
 
   @media (max-width: 767px) {
