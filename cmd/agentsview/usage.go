@@ -11,11 +11,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/pricing"
-	"github.com/wesm/agentsview/internal/server"
-	"github.com/wesm/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/pricing"
+	"go.kenn.io/agentsview/internal/server"
+	"go.kenn.io/agentsview/internal/sync"
 )
 
 // quickSyncMargin pads the mtime cutoff backward from the
@@ -356,6 +356,26 @@ func upsertPricing(
 		}
 	}
 	return database.UpsertModelPricing(dbPrices)
+}
+
+// insertMissingPricing inserts fallback rows for models not already
+// priced, without overwriting existing rows. Used by the direct
+// usage path so a CLI-only data dir still prices fallback-catalog
+// models, while never clobbering richer LiteLLM rows.
+func insertMissingPricing(
+	database *db.DB, prices []pricing.ModelPricing,
+) error {
+	dbPrices := make([]db.ModelPricing, len(prices))
+	for i, p := range prices {
+		dbPrices[i] = db.ModelPricing{
+			ModelPattern:         p.ModelPattern,
+			InputPerMTok:         p.InputPerMTok,
+			OutputPerMTok:        p.OutputPerMTok,
+			CacheCreationPerMTok: p.CacheCreationPerMTok,
+			CacheReadPerMTok:     p.CacheReadPerMTok,
+		}
+	}
+	return database.InsertMissingModelPricing(dbPrices)
 }
 
 func printDailyTable(

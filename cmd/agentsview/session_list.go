@@ -8,8 +8,8 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 func newSessionListCommand() *cobra.Command {
@@ -22,6 +22,7 @@ func newSessionListCommand() *cobra.Command {
 		includeAutomated, includeChildren       bool
 		outcome, healthGrade                    string
 		minToolFailures                         int
+		hasSecret                               bool
 		cursor                                  string
 		limit                                   int
 	)
@@ -54,6 +55,7 @@ func newSessionListCommand() *cobra.Command {
 				IncludeChildren:  includeChildren,
 				Outcome:          outcome,
 				HealthGrade:      healthGrade,
+				HasSecret:        hasSecret,
 				Cursor:           cursor,
 				Limit:            limit,
 			}
@@ -107,6 +109,8 @@ func newSessionListCommand() *cobra.Command {
 		"Filter by health grade (comma-separated: A,B,C,D,F)")
 	flags.IntVar(&minToolFailures, "min-tool-failures", 0,
 		"Minimum tool-failure signal count (0 is a valid filter)")
+	flags.BoolVar(&hasSecret, "has-secret", false,
+		"Only sessions with detected secret leaks")
 	flags.StringVar(&cursor, "cursor", "",
 		"Pagination cursor from a previous response")
 	flags.IntVar(&limit, "limit", 0,

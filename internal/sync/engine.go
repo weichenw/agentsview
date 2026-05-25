@@ -10,14 +10,16 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	gosync "sync"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/parser"
-	"github.com/wesm/agentsview/internal/signals"
-	"github.com/wesm/agentsview/internal/timeutil"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/secrets"
+	"go.kenn.io/agentsview/internal/signals"
+	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 const (
@@ -100,7 +102,17 @@ type Engine struct {
 	idPrefix     string
 	pathRewriter func(string) string
 	emitter      Emitter
+
+	// phaseStats accumulates per-phase wall-clock time inside the bulk
+	// write path. Exposed via PhaseStats() so a CLI driver can log the
+	// totals after a sync pass completes.
+	phaseStats PhaseStats
 }
+
+// PhaseStats returns the engine's phase counter. The values reflect only
+// the most recent sync pass; callers should read after SyncAll/ResyncAll
+// returns.
+func (e *Engine) PhaseStats() *PhaseStats { return &e.phaseStats }
 
 // codexExecMigrationKey is the pg_sync_state flag that
 // records whether the one-time cleanup of legacy codex_exec
@@ -438,6 +450,9 @@ func (e *Engine) classifyOnePath(
 	); ok {
 		return df, true
 	}
+	if df, ok := e.classifyKiroSQLitePath(path); ok {
+		return df, true
+	}
 	if !pathExists {
 		return parser.DiscoveredFile{}, false
 	}
@@ -686,6 +701,38 @@ func (e *Engine) classifyOnePath(
 		}
 	}
 
+	// WorkBuddy: <workbuddyDir>/<project>/<session>.jsonl
+	//     or: <workbuddyDir>/<project>/<session>/subagents/*.jsonl
+	for _, workBuddyDir := range e.agentDirs[parser.AgentWorkBuddy] {
+		if workBuddyDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(workBuddyDir, path); ok {
+			if !strings.HasSuffix(path, ".jsonl") {
+				continue
+			}
+			parts := strings.Split(rel, sep)
+			if len(parts) == 2 {
+				stem := strings.TrimSuffix(parts[1], ".jsonl")
+				if !parser.IsValidSessionID(stem) {
+					continue
+				}
+				return parser.DiscoveredFile{
+					Path:    path,
+					Project: parts[0],
+					Agent:   parser.AgentWorkBuddy,
+				}, true
+			}
+			if len(parts) == 4 && parts[2] == "subagents" {
+				return parser.DiscoveredFile{
+					Path:    path,
+					Project: parts[0],
+					Agent:   parser.AgentWorkBuddy,
+				}, true
+			}
+		}
+	}
+
 	// Amp: <ampDir>/T-*.json
 	for _, ampDir := range e.agentDirs[parser.AgentAmp] {
 		if ampDir == "" {
@@ -854,6 +901,63 @@ func (e *Engine) classifyOnePath(
 		}
 	}
 
+	// Kiro CLI legacy: <kiroDir>/<uuid>.jsonl
+	for _, kiroDir := range e.agentDirs[parser.AgentKiro] {
+		if kiroDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(kiroDir, path); ok {
+			if strings.Count(rel, sep) == 0 &&
+				strings.HasSuffix(rel, ".jsonl") {
+				return parser.DiscoveredFile{
+					Path:  path,
+					Agent: parser.AgentKiro,
+				}, true
+			}
+		}
+	}
+
+	// QClaw: <qclawDir>/<agentId>/sessions/<sessionId>.jsonl
+	//     or: <qclawDir>/<agentId>/sessions/<sessionId>.jsonl.<archiveSuffix>
+	for _, qcDir := range e.agentDirs[parser.AgentQClaw] {
+		if qcDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(qcDir, path); ok {
+			parts := strings.Split(rel, sep)
+			// Expect: <agentId>/sessions/<file>
+			if len(parts) != 3 || parts[1] != "sessions" {
+				continue
+			}
+			if !parser.IsValidSessionID(parts[0]) {
+				continue
+			}
+			if !parser.IsQClawSessionFile(parts[2]) {
+				continue
+			}
+			if !strings.HasSuffix(parts[2], ".jsonl") {
+				sid := parser.QClawSessionID(parts[2])
+				active := filepath.Join(
+					qcDir, parts[0], "sessions",
+					sid+".jsonl",
+				)
+				if _, err := os.Stat(active); err == nil {
+					continue
+				}
+				best := parser.FindQClawSourceFile(
+					qcDir, parts[0]+":"+sid,
+				)
+				if best != path {
+					continue
+				}
+			}
+			return parser.DiscoveredFile{
+				Path:  path,
+				Agent: parser.AgentQClaw,
+			}, true
+		}
+	}
+
 	// Cortex: <cortexDir>/<uuid>.json
 	//     or: <cortexDir>/<uuid>.history.jsonl → remap to .json
 	for _, cortexDir := range e.agentDirs[parser.AgentCortex] {
@@ -888,6 +992,62 @@ func (e *Engine) classifyOnePath(
 					Agent: parser.AgentCortex,
 				}, true
 			}
+		}
+	}
+
+	// Antigravity IDE: <root>/conversations/<uuid>.db (+ -wal, -shm)
+	for _, agDir := range e.agentDirs[parser.AgentAntigravity] {
+		if agDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(agDir, path); ok {
+			parts := strings.Split(rel, sep)
+			if len(parts) != 2 || parts[0] != "conversations" {
+				continue
+			}
+			name := parts[1]
+			name = strings.TrimSuffix(name, "-wal")
+			name = strings.TrimSuffix(name, "-shm")
+			if !strings.HasSuffix(name, ".db") {
+				continue
+			}
+			id := strings.TrimSuffix(name, ".db")
+			if !parser.IsValidSessionID(id) {
+				continue
+			}
+			return parser.DiscoveredFile{
+				Path: filepath.Join(
+					agDir, "conversations", name,
+				),
+				Agent: parser.AgentAntigravity,
+			}, true
+		}
+	}
+
+	// Antigravity CLI: <root>/conversations|implicit/<uuid>.pb
+	for _, agDir := range e.agentDirs[parser.AgentAntigravityCLI] {
+		if agDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(agDir, path); ok {
+			parts := strings.Split(rel, sep)
+			if len(parts) != 2 ||
+				(parts[0] != "conversations" &&
+					parts[0] != "implicit") {
+				continue
+			}
+			name := parts[1]
+			if !strings.HasSuffix(name, ".pb") {
+				continue
+			}
+			id := strings.TrimSuffix(name, ".pb")
+			if !parser.IsValidSessionID(id) {
+				continue
+			}
+			return parser.DiscoveredFile{
+				Path:  path,
+				Agent: parser.AgentAntigravityCLI,
+			}, true
 		}
 	}
 
@@ -1019,6 +1179,42 @@ func (e *Engine) classifyOpenCodePath(
 	return parser.DiscoveredFile{}, false
 }
 
+func (e *Engine) classifyKiroSQLitePath(
+	path string,
+) (parser.DiscoveredFile, bool) {
+	if dbPath, _, ok := parser.ParseKiroSQLiteVirtualPath(path); ok {
+		for _, kiroDir := range e.agentDirs[parser.AgentKiro] {
+			if _, under := isUnder(kiroDir, dbPath); under {
+				return parser.DiscoveredFile{
+					Path:  path,
+					Agent: parser.AgentKiro,
+				}, true
+			}
+		}
+	}
+	for _, kiroDir := range e.agentDirs[parser.AgentKiro] {
+		if kiroDir == "" {
+			continue
+		}
+		rel, ok := isUnder(kiroDir, path)
+		if !ok {
+			continue
+		}
+		base := filepath.Base(rel)
+		if rel != "data.sqlite3" &&
+			!strings.HasPrefix(base, "data.sqlite3-") {
+			continue
+		}
+		if dbPath := parser.FindKiroSQLiteDBPath(kiroDir); dbPath != "" {
+			return parser.DiscoveredFile{
+				Path:  dbPath,
+				Agent: parser.AgentKiro,
+			}, true
+		}
+	}
+	return parser.DiscoveredFile{}, false
+}
+
 // vscodeJSONLSiblingExists returns true when path is a .json
 // file and a .jsonl sibling exists for the same UUID. This
 // mirrors the dedup logic in DiscoverVSCodeCopilotSessions.
@@ -1069,9 +1265,8 @@ func (e *Engine) ResyncAll(
 		log.Printf("resync: get old file count: %v", err)
 		oldFileSessions = 1
 	} else {
-		oldFileSessions -= e.countRootOpenCodeSessions(
-			origDB,
-		)
+		oldFileSessions -= e.countRootOpenCodeSessions(origDB)
+		oldFileSessions -= e.countRootKiroSQLiteSessions(origDB)
 		if oldFileSessions < 0 {
 			oldFileSessions = 0
 		}
@@ -1428,6 +1623,24 @@ func (e *Engine) countRootOpenCodeSessions(
 	return count
 }
 
+func (e *Engine) countRootKiroSQLiteSessions(
+	database *db.DB,
+) int {
+	var count int
+	err := database.Reader().QueryRow(`
+		SELECT COUNT(*) FROM sessions
+		WHERE agent = ?
+		  AND file_path LIKE ?
+		  AND message_count > 0
+		  AND relationship_type NOT IN ('subagent', 'fork')
+		  AND deleted_at IS NULL
+	`, string(parser.AgentKiro), "%data.sqlite3#%").Scan(&count)
+	if err != nil {
+		log.Printf("count root kiro sqlite sessions: %v", err)
+	}
+	return count
+}
+
 // Sync state keys persisted in pg_sync_state.
 const (
 	syncStateStartedAt  = "last_sync_started_at"
@@ -1502,6 +1715,7 @@ func (e *Engine) syncAllLocked(
 	}
 
 	e.recordSyncStarted()
+	e.phaseStats.Reset()
 
 	t0 := time.Now()
 
@@ -1523,12 +1737,13 @@ func (e *Engine) syncAllLocked(
 	}
 
 	all = dedupeDiscoveredFiles(all)
+	all = e.filterShadowedLegacyKiroFiles(all)
 
 	verbose := onProgress == nil
 
 	if verbose {
 		log.Printf(
-			"discovered %d files (%d claude, %d codex, %d copilot, %d gemini, %d cursor, %d amp, %d zencoder, %d iflow, %d vscode-copilot, %d pi) in %s",
+			"discovered %d files (%d claude, %d codex, %d copilot, %d gemini, %d cursor, %d amp, %d zencoder, %d iflow, %d vscode-copilot, %d pi, %d kiro) in %s",
 			len(all),
 			counts[parser.AgentClaude],
 			counts[parser.AgentCodex],
@@ -1540,6 +1755,7 @@ func (e *Engine) syncAllLocked(
 			counts[parser.AgentIflow],
 			counts[parser.AgentVSCodeCopilot],
 			counts[parser.AgentPi],
+			counts[parser.AgentKiro],
 			time.Since(t0).Round(time.Millisecond),
 		)
 	}
@@ -1594,6 +1810,61 @@ func (e *Engine) syncAllLocked(
 		}
 		stats.messagesIndexed = dbProgress.MessagesIndexed
 		onProgress(dbProgress)
+	}
+
+	// Sync current Kiro CLI sessions (SQLite-backed).
+	tKiro := time.Now()
+	kiroPending := e.syncKiroSQLite(ctx)
+	if len(kiroPending) > 0 {
+		stats.TotalSessions += len(kiroPending)
+		tWrite := time.Now()
+		var kiroWritten int
+		if writeMode == syncWriteBulk {
+			var failedWrites int
+			kiroWritten, _, failedWrites = e.writeBatch(
+				kiroPending, writeMode, true,
+			)
+			for range failedWrites {
+				stats.RecordFailed()
+			}
+		} else {
+			resolveWorktreeProject := e.loadWorktreeProjectResolver()
+			for _, pw := range kiroPending {
+				if ctx.Err() != nil {
+					break
+				}
+				switch err := e.writeSessionFullWithResolver(
+					pw, resolveWorktreeProject,
+				); {
+				case err == nil:
+					kiroWritten++
+				case isIntentionalSessionSkip(err),
+					errors.Is(err, errSessionPreserved):
+				default:
+					stats.RecordFailed()
+				}
+			}
+		}
+		stats.RecordSynced(kiroWritten)
+		if verbose {
+			log.Printf(
+				"kiro sqlite write: %d sessions in %s",
+				len(kiroPending),
+				time.Since(tWrite).Round(time.Millisecond),
+			)
+		}
+	}
+	if verbose {
+		log.Printf(
+			"kiro sqlite sync: %s",
+			time.Since(tKiro).Round(time.Millisecond),
+		)
+	}
+	advanceDBProgress(e.countDBBackedProgressTotal(parser.AgentKiro), kiroPending)
+
+	if ctx.Err() != nil {
+		stats.Aborted = true
+		return stats
 	}
 
 	// Sync OpenCode sessions (DB-backed, not file-based).
@@ -1909,6 +2180,11 @@ func filterFilesByMtime(
 func discoveredFileMtime(
 	file parser.DiscoveredFile,
 ) (int64, error) {
+	if file.Agent == parser.AgentKiro {
+		if _, _, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
+			return parser.KiroSQLiteSourceMtime(file.Path)
+		}
+	}
 	if file.Agent == parser.AgentOpenCode {
 		if _, _, ok := parser.ParseOpenCodeSQLiteVirtualPath(file.Path); ok {
 			return parser.OpenCodeSourceMtime(file.Path)
@@ -1984,6 +2260,8 @@ func (e *Engine) countDBBackedProgressTotal(agent parser.AgentType) int {
 			continue
 		}
 		switch agent {
+		case parser.AgentKiro:
+			total += e.countOneKiroSQLiteSessions(dir)
 		case parser.AgentOpenCode:
 			total += e.countOneOpenCodeSessions(dir)
 		case parser.AgentWarp:
@@ -2002,6 +2280,12 @@ func (e *Engine) countDBBackedSessions(ctx context.Context) int {
 		return 0
 	}
 	total := 0
+	for _, dir := range e.agentDirs[parser.AgentKiro] {
+		if dir == "" {
+			continue
+		}
+		total += e.countOneKiroSQLiteSessions(dir)
+	}
 	for _, dir := range e.agentDirs[parser.AgentOpenCode] {
 		if dir == "" {
 			continue
@@ -2027,6 +2311,152 @@ func (e *Engine) countDBBackedSessions(ctx context.Context) int {
 		total += e.countOnePiebaldSessions(dir)
 	}
 	return total
+}
+
+func (e *Engine) filterShadowedLegacyKiroFiles(
+	files []parser.DiscoveredFile,
+) []parser.DiscoveredFile {
+	currentIDs := make(map[string]struct{})
+	for _, dir := range e.agentDirs[parser.AgentKiro] {
+		for id := range parser.KiroSQLiteSessionIDs(dir) {
+			currentIDs[id] = struct{}{}
+		}
+	}
+	if len(currentIDs) == 0 {
+		return files
+	}
+
+	out := files[:0]
+	for _, file := range files {
+		if file.Agent != parser.AgentKiro ||
+			filepath.Base(file.Path) == "data.sqlite3" {
+			out = append(out, file)
+			continue
+		}
+		legacyID := parser.KiroSessionIDFromPath(file.Path)
+		if _, shadowed := currentIDs[legacyID]; shadowed {
+			continue
+		}
+		out = append(out, file)
+	}
+	return out
+}
+
+func (e *Engine) isShadowedLegacyKiroPath(path string) bool {
+	if filepath.Base(path) == "data.sqlite3" {
+		return false
+	}
+	legacyID := parser.KiroSessionIDFromPath(path)
+	if legacyID == "" {
+		return false
+	}
+	for _, dir := range e.agentDirs[parser.AgentKiro] {
+		dbPath := parser.FindKiroSQLiteDBPath(dir)
+		if dbPath != "" &&
+			parser.KiroSQLiteSessionExists(dbPath, legacyID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) kiroSQLitePendingSessionIDs(
+	metas []parser.KiroSQLiteSessionMeta,
+) []string {
+	var changed []string
+	for _, meta := range metas {
+		_, storedMtime, ok := e.db.GetFileInfoByPath(meta.VirtualPath)
+		if ok && storedMtime == meta.FileMtime &&
+			e.db.GetDataVersionByPath(meta.VirtualPath) >=
+				db.CurrentDataVersion() {
+			continue
+		}
+		changed = append(changed, meta.SessionID)
+	}
+	return changed
+}
+
+func (e *Engine) countOneKiroSQLiteSessions(dir string) int {
+	dbPath := parser.FindKiroSQLiteDBPath(dir)
+	if dbPath == "" {
+		return 0
+	}
+	store, err := parser.OpenKiroSQLiteStore(dbPath)
+	if err != nil {
+		log.Printf("sync kiro sqlite: %v", err)
+		return 0
+	}
+	defer store.Close()
+	metas, err := store.ListSessionMeta()
+	if err != nil {
+		log.Printf("sync kiro sqlite: %v", err)
+		return 0
+	}
+	return len(metas)
+}
+
+func (e *Engine) syncKiroSQLite(
+	ctx context.Context,
+) []pendingWrite {
+	var allPending []pendingWrite
+	for _, dir := range e.agentDirs[parser.AgentKiro] {
+		if ctx.Err() != nil {
+			break
+		}
+		if dir == "" {
+			continue
+		}
+		allPending = append(
+			allPending, e.syncOneKiroSQLite(ctx, dir)...,
+		)
+	}
+	return allPending
+}
+
+func (e *Engine) syncOneKiroSQLite(
+	ctx context.Context, dir string,
+) []pendingWrite {
+	dbPath := parser.FindKiroSQLiteDBPath(dir)
+	if dbPath == "" {
+		return nil
+	}
+	store, err := parser.OpenKiroSQLiteStore(dbPath)
+	if err != nil {
+		log.Printf("sync kiro sqlite: %v", err)
+		return nil
+	}
+	defer store.Close()
+	metas, err := store.ListSessionMeta()
+	if err != nil {
+		log.Printf("sync kiro sqlite: %v", err)
+		return nil
+	}
+	changed := e.kiroSQLitePendingSessionIDs(metas)
+	if len(changed) == 0 {
+		return nil
+	}
+
+	var pending []pendingWrite
+	for _, sid := range changed {
+		if ctx.Err() != nil {
+			break
+		}
+		sess, msgs, err := store.ParseSession(
+			sid, e.machine,
+		)
+		if err != nil {
+			log.Printf("kiro sqlite session %s: %v", sid, err)
+			continue
+		}
+		if sess == nil {
+			continue
+		}
+		pending = append(pending, pendingWrite{
+			sess: *sess,
+			msgs: msgs,
+		})
+	}
+	return pending
 }
 
 // syncOpenCode syncs sessions from OpenCode SQLite databases.
@@ -2314,10 +2744,14 @@ func (e *Engine) processFile(
 	file parser.DiscoveredFile,
 ) processResult {
 
-	info, err := os.Stat(file.Path)
+	statPath := file.Path
+	if dbPath, _, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
+		statPath = dbPath
+	}
+	info, err := os.Stat(statPath)
 	if err != nil {
 		return processResult{
-			err: fmt.Errorf("stat %s: %w", file.Path, err),
+			err: fmt.Errorf("stat %s: %w", statPath, err),
 		}
 	}
 
@@ -2383,6 +2817,8 @@ func (e *Engine) processFile(
 		res = e.processQwen(file, info)
 	case parser.AgentOpenClaw:
 		res = e.processOpenClaw(file, info)
+	case parser.AgentQClaw:
+		res = e.processQClaw(file, info)
 	case parser.AgentKimi:
 		res = e.processKimi(file, info)
 	case parser.AgentKiro:
@@ -2393,8 +2829,14 @@ func (e *Engine) processFile(
 		res = e.processCortex(file, info)
 	case parser.AgentHermes:
 		res = e.processHermes(file, info)
+	case parser.AgentWorkBuddy:
+		res = e.processWorkBuddy(file, info)
 	case parser.AgentPositron:
 		res = e.processPositron(file, info)
+	case parser.AgentAntigravity:
+		res = e.processAntigravity(file, info)
+	case parser.AgentAntigravityCLI:
+		res = e.processAntigravityCLI(file, info)
 	default:
 		res = processResult{
 			err: fmt.Errorf(
@@ -2410,6 +2852,14 @@ func (e *Engine) processFile(
 func (e *Engine) shouldCacheSkip(
 	file parser.DiscoveredFile,
 ) bool {
+	if file.Agent == parser.AgentKiro {
+		if filepath.Base(file.Path) == "data.sqlite3" {
+			return false
+		}
+		if _, _, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
+			return false
+		}
+	}
 	if file.Agent != parser.AgentOpenCode {
 		return true
 	}
@@ -2940,7 +3390,7 @@ func (e *Engine) processOpenCode(
 				Messages: msgs,
 			})
 		}
-		return processResult{results: results}
+		return processResult{results: results, forceReplace: true}
 	}
 	if e.shouldSkipOpenCodeByPath(file.Path) {
 		return processResult{skip: true}
@@ -3224,6 +3674,35 @@ func (e *Engine) processOpenClaw(
 	}
 }
 
+func (e *Engine) processQClaw(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseQClawSession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
 func (e *Engine) processKimi(
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
@@ -3256,6 +3735,66 @@ func (e *Engine) processKimi(
 func (e *Engine) processKiro(
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
+	if dbPath, sessionID, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
+		sess, msgs, err := parser.ParseKiroSQLiteSession(
+			dbPath, sessionID, e.machine,
+		)
+		if err != nil {
+			return processResult{err: err}
+		}
+		if sess == nil {
+			return processResult{}
+		}
+		return processResult{
+			results: []parser.ParseResult{
+				{Session: *sess, Messages: msgs},
+			},
+			forceReplace: true,
+		}
+	}
+	if filepath.Base(file.Path) == "data.sqlite3" {
+		store, err := parser.OpenKiroSQLiteStore(file.Path)
+		if err != nil {
+			return processResult{err: err}
+		}
+		defer store.Close()
+		metas, err := store.ListSessionMeta()
+		if err != nil {
+			return processResult{err: err}
+		}
+		var results []parser.ParseResult
+		for _, meta := range metas {
+			_, storedMtime, ok := e.db.GetFileInfoByPath(
+				meta.VirtualPath,
+			)
+			if ok && storedMtime == meta.FileMtime &&
+				e.db.GetDataVersionByPath(meta.VirtualPath) >=
+					db.CurrentDataVersion() {
+				continue
+			}
+			sess, msgs, err := store.ParseSession(
+				meta.SessionID, e.machine,
+			)
+			if err != nil {
+				log.Printf(
+					"kiro sqlite watch session %s: %v",
+					meta.SessionID, err,
+				)
+				continue
+			}
+			if sess == nil {
+				continue
+			}
+			results = append(results, parser.ParseResult{
+				Session:  *sess,
+				Messages: msgs,
+			})
+		}
+		return processResult{results: results, forceReplace: true}
+	}
+	if e.isShadowedLegacyKiroPath(file.Path) {
+		return processResult{skip: true}
+	}
 	if e.shouldSkipByPath(file.Path, info) {
 		return processResult{skip: true}
 	}
@@ -3379,6 +3918,35 @@ func (e *Engine) processHermes(
 	}
 }
 
+func (e *Engine) processWorkBuddy(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseWorkBuddySession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
 func (e *Engine) processPositron(
 	file parser.DiscoveredFile, info os.FileInfo,
 ) processResult {
@@ -3387,6 +3955,64 @@ func (e *Engine) processPositron(
 	}
 
 	sess, msgs, err := parser.ParsePositronSession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
+func (e *Engine) processAntigravity(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseAntigravitySession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if sess == nil {
+		return processResult{}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil {
+		sess.File.Hash = hash
+	}
+
+	return processResult{
+		results: []parser.ParseResult{
+			{Session: *sess, Messages: msgs},
+		},
+	}
+}
+
+func (e *Engine) processAntigravityCLI(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	sess, msgs, err := parser.ParseAntigravityCLISession(
 		file.Path, file.Project, e.machine,
 	)
 	if err != nil {
@@ -3635,8 +4261,8 @@ func (e *Engine) processIflow(
 // from the end of the tool call list.
 func computeFinalStreak(calls []signals.ToolCallRow) int {
 	streak := 0
-	for i := len(calls) - 1; i >= 0; i-- {
-		if signals.IsFailure(calls[i]) {
+	for _, v := range slices.Backward(calls) {
+		if signals.IsFailure(v) {
 			streak++
 		} else {
 			break
@@ -3684,7 +4310,7 @@ func (e *Engine) recomputeSignalsFromDB(
 			"loading messages %s: %w", sessionID, err,
 		)
 	}
-	update := computeSignalsFromMessages(*sess, msgs)
+	update, findings := computeSignalsAndSecrets(*sess, msgs)
 	if err := e.db.UpdateSessionSignals(
 		sessionID, update,
 	); err != nil {
@@ -3694,6 +4320,12 @@ func (e *Engine) recomputeSignalsFromDB(
 		return fmt.Errorf(
 			"updating signals %s: %w", sessionID, err,
 		)
+	}
+	if err := e.db.ReplaceSessionSecretFindings(
+		sessionID, findings, update.SecretLeakCount, update.SecretsRulesVersion,
+	); err != nil {
+		log.Printf("secrets: persist %s: %v", sessionID, err)
+		return fmt.Errorf("persisting findings %s: %w", sessionID, err)
 	}
 	return nil
 }
@@ -3810,9 +4442,11 @@ func (e *Engine) writeBatch(
 		replaceMessages := forceReplace || pw.forceReplace ||
 			stale || pw.sess.Agent == parser.AgentOpenCode
 
+		update, findings := computeSignalsAndSecrets(s, msgs)
+
 		var werr error
 		if replaceMessages {
-			werr = e.db.ReplaceSessionMessages(s.ID, msgs)
+			werr = e.db.ReplaceSessionContent(s.ID, msgs, update, findings)
 		} else {
 			werr = e.writeMessages(s.ID, msgs)
 		}
@@ -3848,13 +4482,15 @@ func (e *Engine) writeBatch(
 			)
 		}
 
-		update := computeSignalsFromMessages(s, msgs)
-		if err := e.db.UpdateSessionSignals(
-			s.ID, update,
-		); err != nil {
-			log.Printf(
-				"signals: update %s: %v", s.ID, err,
-			)
+		if !replaceMessages {
+			if err := e.db.UpdateSessionSignals(s.ID, update); err != nil {
+				log.Printf("signals: update %s: %v", s.ID, err)
+			}
+			if err := e.db.ReplaceSessionSecretFindings(
+				s.ID, findings, update.SecretLeakCount,
+				update.SecretsRulesVersion); err != nil {
+				log.Printf("secrets: persist %s: %v", s.ID, err)
+			}
 		}
 		writtenSessions++
 		writtenMessages += len(msgs)
@@ -3902,19 +4538,25 @@ func (e *Engine) writeBatchBulk(
 	resolveWorktreeProject := e.loadWorktreeProjectResolver()
 
 	for _, pw := range batch {
+		tPrep := time.Now()
 		s, msgs, ok := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
+		e.phaseStats.PrepNanos.Add(int64(time.Since(tPrep)))
 		if !ok {
 			continue
 		}
 		replaceMessages := forceReplace || pw.forceReplace ||
 			pw.sess.Agent == parser.AgentOpenCode
+		tScan := time.Now()
+		update, findings := computeSignalsAndSecrets(s, msgs)
+		e.phaseStats.ScanNanos.Add(int64(time.Since(tScan)))
 		writes = append(writes, db.SessionBatchWrite{
 			Session:         s,
 			Messages:        msgs,
 			UsageEvents:     toDBUsageEvents(s.ID, pw.usageEvents),
-			Signals:         computeSignalsFromMessages(s, msgs),
+			Signals:         update,
+			Findings:        findings,
 			DataVersion:     db.CurrentDataVersion(),
 			ReplaceMessages: replaceMessages,
 		})
@@ -3929,7 +4571,12 @@ func (e *Engine) writeBatchBulk(
 		return 0, 0, 0
 	}
 
+	tWrite := time.Now()
 	result, err := e.db.WriteSessionBatch(writes)
+	e.phaseStats.WriteNanos.Add(int64(time.Since(tWrite)))
+	e.phaseStats.Batches.Add(1)
+	e.phaseStats.WriteBatchSize.Add(int64(len(writes)))
+	e.phaseStats.BatchedWrites.Add(int64(result.WrittenSessions))
 	if err != nil {
 		log.Printf("write session batch: %v", err)
 		return 0, 0, len(writes)
@@ -4091,9 +4738,8 @@ func (e *Engine) writeSessionFullWithResolver(
 		log.Printf("upsert session %s: %v", s.ID, err)
 		return err
 	}
-	if err := e.db.ReplaceSessionMessages(
-		s.ID, msgs,
-	); err != nil {
+	update, findings := computeSignalsAndSecrets(s, msgs)
+	if err := e.db.ReplaceSessionContent(s.ID, msgs, update, findings); err != nil {
 		log.Printf(
 			"replace messages for %s: %v",
 			s.ID, err,
@@ -4117,13 +4763,6 @@ func (e *Engine) writeSessionFullWithResolver(
 	); err != nil {
 		log.Printf(
 			"set data_version for %s: %v", s.ID, err,
-		)
-	}
-
-	update := computeSignalsFromMessages(s, msgs)
-	if err := e.db.UpdateSessionSignals(s.ID, update); err != nil {
-		log.Printf(
-			"signals: update %s: %v", s.ID, err,
 		)
 	}
 
@@ -4523,6 +5162,21 @@ func (e *Engine) FindSourceFile(sessionID string) string {
 		return ""
 	}
 
+	if def.Type == parser.AgentKiro {
+		for _, dir := range e.agentDirs[parser.AgentKiro] {
+			dbPath := parser.FindKiroSQLiteDBPath(dir)
+			if dbPath == "" ||
+				!parser.KiroSQLiteSessionExists(
+					dbPath, rawSessionID,
+				) {
+				continue
+			}
+			return parser.KiroSQLiteVirtualPath(
+				dbPath, rawSessionID,
+			)
+		}
+	}
+
 	// Prefer stored file_path — it's authoritative and handles
 	// cases where the session ID doesn't match the filename.
 	if fp := e.db.GetSessionFilePath(sessionID); fp != "" {
@@ -4636,6 +5290,15 @@ func (e *Engine) SourceMtime(sessionID string) int64 {
 		}
 		return mtime
 	}
+	if def.Type == parser.AgentKiro {
+		if _, _, ok := parser.ParseKiroSQLiteVirtualPath(path); ok {
+			mtime, err := parser.KiroSQLiteSourceMtime(path)
+			if err != nil {
+				return 0
+			}
+			return mtime
+		}
+	}
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -4697,6 +5360,15 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 	if def.Type == parser.AgentOpenCode &&
 		isOpenCodeSQLiteVirtualPath(path) {
 		err = e.syncSingleOpenCode(sessionID)
+		if errors.Is(err, errSessionPreserved) {
+			preserved = true
+			return nil
+		}
+		return err
+	}
+	if def.Type == parser.AgentKiro &&
+		isKiroSQLiteVirtualPath(path) {
+		err = e.syncSingleKiroSQLite(sessionID)
 		if errors.Is(err, errSessionPreserved) {
 			preserved = true
 			return nil
@@ -4780,6 +5452,18 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 		file.Project = parser.GetProjectName(
 			filepath.Base(filepath.Dir(filepath.Dir(path))),
 		)
+	case parser.AgentWorkBuddy:
+		for _, workBuddyDir := range e.agentDirs[parser.AgentWorkBuddy] {
+			rel, ok := isUnder(workBuddyDir, path)
+			if !ok {
+				continue
+			}
+			parts := strings.Split(rel, string(filepath.Separator))
+			if len(parts) == 2 || len(parts) == 4 && parts[2] == "subagents" {
+				file.Project = parts[0]
+				break
+			}
+		}
 	}
 
 	res := e.processFile(file)
@@ -4952,6 +5636,65 @@ func (e *Engine) syncSingleOpenCode(
 		)
 	}
 	return fmt.Errorf("opencode session %s not found", sessionID)
+}
+
+func (e *Engine) syncSingleKiroSQLite(
+	sessionID string,
+) error {
+	rawID := strings.TrimPrefix(sessionID, "kiro:")
+
+	var lastErr error
+	for _, dir := range e.agentDirs[parser.AgentKiro] {
+		dbPath := parser.FindKiroSQLiteDBPath(dir)
+		if dbPath == "" {
+			continue
+		}
+		store, err := parser.OpenKiroSQLiteStore(dbPath)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		sess, msgs, err := store.ParseSession(
+			rawID, e.machine,
+		)
+		if closeErr := store.Close(); closeErr != nil && err == nil {
+			lastErr = closeErr
+			continue
+		}
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if sess == nil {
+			continue
+		}
+		if err := e.writeSessionFull(
+			pendingWrite{sess: *sess, msgs: msgs},
+		); err != nil &&
+			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionPreserved) {
+			return fmt.Errorf("write session %s: %w",
+				sess.ID, err)
+		} else if errors.Is(err, errSessionPreserved) {
+			return err
+		}
+		return nil
+	}
+
+	if len(e.agentDirs[parser.AgentKiro]) == 0 {
+		return fmt.Errorf("kiro dir not configured")
+	}
+	if lastErr != nil {
+		return fmt.Errorf(
+			"kiro sqlite session %s: %w", sessionID, lastErr,
+		)
+	}
+	return fmt.Errorf("kiro sqlite session %s not found", sessionID)
+}
+
+func isKiroSQLiteVirtualPath(path string) bool {
+	_, _, ok := parser.ParseKiroSQLiteVirtualPath(path)
+	return ok
 }
 
 func readOpenCodeStorageSessionID(path string) string {
@@ -5608,4 +6351,110 @@ func (e *Engine) emit(scope string) {
 	if e.emitter != nil {
 		e.emitter.Emit(scope)
 	}
+}
+
+const scanProgressInterval = 50
+
+// SecretScanInput parameterises ScanSecrets.
+type SecretScanInput struct {
+	Backfill bool
+	Project  string
+	Agent    string
+	DateFrom string
+	DateTo   string
+}
+
+// SecretScanProgress is one progress tick.
+type SecretScanProgress struct {
+	Scanned int `json:"scanned"`
+	Total   int `json:"total"`
+}
+
+// SecretScanSummary is the final result of a scan.
+type SecretScanSummary struct {
+	Scanned       int `json:"scanned"`
+	WithSecrets   int `json:"with_secrets"`
+	TotalFindings int `json:"total_findings"`
+}
+
+// ScanSecrets scans candidate sessions and persists their findings, invoking
+// progress periodically. Resumable: each scanned session records the current
+// rules version, so an interrupted backfill resumes by skipping sessions
+// already at that version.
+func (e *Engine) ScanSecrets(
+	ctx context.Context, in SecretScanInput,
+	progress func(SecretScanProgress),
+) (SecretScanSummary, error) {
+	ver := secrets.RulesVersion()
+	ids, err := e.db.SecretScanCandidates(ctx, db.SecretScanCandidateFilter{
+		CurrentVersion: ver, OnlyStale: in.Backfill,
+		Project: in.Project, Agent: in.Agent,
+		DateFrom: in.DateFrom, DateTo: in.DateTo,
+	})
+	if err != nil {
+		return SecretScanSummary{}, err
+	}
+	var sum SecretScanSummary
+	total := len(ids)
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			return sum, ctx.Err()
+		}
+		nf, leak, ok := e.scanOneSession(ctx, id, ver)
+		// A cancellation during the scan must end the run with an error,
+		// not a partial success. This covers both a failed scan and a
+		// successful final session whose context was canceled mid-scan,
+		// since scanOneSession does CPU work and a non-context-aware
+		// persist after its context-aware reads.
+		if ctx.Err() != nil {
+			return sum, ctx.Err()
+		}
+		if !ok {
+			continue
+		}
+		sum.Scanned++
+		sum.TotalFindings += nf
+		if leak > 0 {
+			sum.WithSecrets++
+		}
+		if progress != nil && scanShouldReport(i, total) {
+			progress(SecretScanProgress{Scanned: sum.Scanned, Total: total})
+		}
+	}
+	return sum, nil
+}
+
+// scanOneSession scans one session and persists its findings at ver. Returns
+// the finding count, the definite-leak count, and ok=false when the session
+// could not be loaded or persisted (skipped, not fatal to the whole run).
+//
+// Holds syncMu so the read/compute/write path is atomic against a concurrent
+// sync replacing this session's messages: otherwise a sync could write fresh
+// findings for new messages and then have this scan overwrite them with
+// results from a stale snapshot while marking the session current. The lock is
+// taken per session, not for the whole scan, so a long backfill does not stall
+// the file watcher and periodic sync.
+func (e *Engine) scanOneSession(
+	ctx context.Context, id, ver string,
+) (int, int, bool) {
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
+	sess, err := e.db.GetSessionFull(ctx, id)
+	if err != nil || sess == nil {
+		return 0, 0, false
+	}
+	msgs, err := e.db.GetAllMessages(ctx, id)
+	if err != nil {
+		return 0, 0, false
+	}
+	findings, leak := scanSecretsFromMessages(*sess, msgs, secrets.Scan)
+	if err := e.db.ReplaceSessionSecretFindings(id, findings, leak, ver); err != nil {
+		log.Printf("secrets scan: persist %s: %v", id, err)
+		return 0, 0, false
+	}
+	return len(findings), leak, true
+}
+
+func scanShouldReport(i, total int) bool {
+	return (i+1)%scanProgressInterval == 0 || i+1 == total
 }

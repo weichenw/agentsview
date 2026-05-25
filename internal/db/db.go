@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	_ "embed"
@@ -16,8 +17,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 // dataVersion tracks parser changes that require a full
@@ -27,9 +28,22 @@ import (
 // trigger a non-destructive re-sync (mtime reset + skip cache
 // clear) so existing session data is preserved.
 //
-// Bumped to 27: Piebald parser now persists normalized per-message
+// Bumped to 29: secret findings now record tool_result_event
+// coordinates by the persisted slice position (matching
+// tool_result_events.event_index) instead of the parser's raw event
+// index. Existing rows need re-scanning so stored findings normalize
+// and `secrets list --reveal` can re-read the source.
+//
+// (28: Gemini parser now persists normalized
+// (Anthropic-style) per-message token_usage JSON instead of the raw
+// tokens object, and rolls thoughts tokens into OutputTokens so
+// per-message and session output totals match the cost JSON.
+// Existing Gemini rows need re-parsing so usage and cost reports
+// reflect the new shape and include thoughts tokens.)
+//
+// (27: Piebald parser now persists normalized per-message
 // token_usage JSON. Existing Piebald rows need re-parsing so Usage
-// reports can include older Piebald sessions.
+// reports can include older Piebald sessions.)
 //
 // (26: Claude parser now (a) links Task / Agent tool
 // calls to child subagent sessions via toolUseResult.agentId
@@ -81,7 +95,7 @@ import (
 //
 // (17: Codex <skill> template filtering.)
 // (16: <turn_aborted> system messages.)
-const dataVersion = 27
+const dataVersion = 29
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
 
@@ -135,8 +149,9 @@ type DB struct {
 	writer    atomic.Pointer[sql.DB]
 	reader    atomic.Pointer[sql.DB]
 	mu        sync.Mutex // serializes writes
-	retired   []*sql.DB  // old pools kept open for in-flight reads
-	dataStale bool       // set by Open when user_version < dataVersion
+	connMu    sync.RWMutex
+	retired   []*sql.DB // old pools kept open for in-flight reads
+	dataStale bool      // set by Open when user_version < dataVersion
 
 	cursorMu     sync.RWMutex
 	cursorSecret []byte
@@ -144,8 +159,73 @@ type DB struct {
 	customPricing map[string]config.CustomModelRate
 }
 
-// getReader returns the current read-only connection pool.
-func (db *DB) getReader() *sql.DB { return db.reader.Load() }
+// Reader exposes guarded read-only query operations. It intentionally does
+// not expose the underlying *sql.DB so callers cannot retain a raw pool across
+// Reopen.
+type Reader interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryContext(
+		ctx context.Context, query string, args ...any,
+	) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+	QueryRowContext(
+		ctx context.Context, query string, args ...any,
+	) *sql.Row
+}
+
+type readerHandle struct {
+	owner *DB
+}
+
+func (r *readerHandle) current() *sql.DB {
+	return r.owner.reader.Load()
+}
+
+func (r *readerHandle) Exec(
+	query string, args ...any,
+) (sql.Result, error) {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().Exec(query, args...)
+}
+
+func (r *readerHandle) Query(
+	query string, args ...any,
+) (*sql.Rows, error) {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().Query(query, args...)
+}
+
+func (r *readerHandle) QueryContext(
+	ctx context.Context, query string, args ...any,
+) (*sql.Rows, error) {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().QueryContext(ctx, query, args...)
+}
+
+func (r *readerHandle) QueryRow(
+	query string, args ...any,
+) *sql.Row {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().QueryRow(query, args...)
+}
+
+func (r *readerHandle) QueryRowContext(
+	ctx context.Context, query string, args ...any,
+) *sql.Row {
+	r.owner.connMu.RLock()
+	defer r.owner.connMu.RUnlock()
+	return r.current().QueryRowContext(ctx, query, args...)
+}
+
+// getReader returns a guarded facade for the current read-only connection pool.
+func (db *DB) getReader() *readerHandle { return &readerHandle{owner: db} }
+
+func (db *DB) rawReader() *sql.DB { return db.reader.Load() }
 
 // getWriter returns the current write connection.
 func (db *DB) getWriter() *sql.DB { return db.writer.Load() }
@@ -547,6 +627,14 @@ func (db *DB) migrateColumns() error {
 			"sessions", "termination_status",
 			"ALTER TABLE sessions ADD COLUMN termination_status TEXT",
 		},
+		{
+			"sessions", "secret_leak_count",
+			"ALTER TABLE sessions ADD COLUMN secret_leak_count INTEGER NOT NULL DEFAULT 0",
+		},
+		{
+			"sessions", "secrets_rules_version",
+			"ALTER TABLE sessions ADD COLUMN secrets_rules_version TEXT NOT NULL DEFAULT ''",
+		},
 	}
 
 	for _, m := range migrations {
@@ -657,6 +745,8 @@ func (db *DB) createPartialIndexesLocked(w *sql.DB) error {
 		 ON messages(session_id) WHERE is_sidechain = 1`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_source_uuid
 		 ON messages(source_uuid) WHERE source_uuid != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_has_secret
+		 ON sessions(secret_leak_count) WHERE secret_leak_count > 0`,
 	}
 	for _, ddl := range indexes {
 		if _, err := w.Exec(ddl); err != nil {
@@ -1350,10 +1440,12 @@ func (db *DB) init() error {
 // retired pools left over from previous Reopen calls.
 func (db *DB) Close() error {
 	db.mu.Lock()
+	db.connMu.Lock()
 	w := db.getWriter()
-	r := db.getReader()
+	r := db.rawReader()
 	retired := db.retired
 	db.retired = nil
+	db.connMu.Unlock()
 	db.mu.Unlock()
 
 	errs := []error{w.Close(), r.Close()}
@@ -1370,10 +1462,12 @@ func (db *DB) Close() error {
 func (db *DB) CloseConnections() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	db.connMu.Lock()
+	defer db.connMu.Unlock()
 
 	errs := []error{
 		db.getWriter().Close(),
-		db.getReader().Close(),
+		db.rawReader().Close(),
 	}
 	for _, p := range db.retired {
 		errs = append(errs, p.Close())
@@ -1412,18 +1506,8 @@ func (db *DB) reopenLocked() error {
 	}
 	reader.SetMaxOpenConns(4)
 
-	// Close pools from any previous reopen. They have been
-	// retired for at least one full Reopen cycle, so all
-	// in-flight queries on them have long since completed.
-	for _, p := range db.retired {
-		if err := p.Close(); err != nil {
-			log.Printf(
-				"warning: closing retired db pool: %v", err,
-			)
-		}
-	}
-	db.retired = db.retired[:0]
-
+	db.connMu.Lock()
+	retired := append([]*sql.DB(nil), db.retired...)
 	oldWriter := db.writer.Swap(writer)
 	oldReader := db.reader.Swap(reader)
 
@@ -1431,7 +1515,19 @@ func (db *DB) reopenLocked() error {
 	// loaded the old pointer before the swap may still have
 	// in-flight queries; these pools will be closed on the
 	// next Reopen, CloseConnections, or Close call.
-	db.retired = append(db.retired, oldWriter, oldReader)
+	db.retired = []*sql.DB{oldWriter, oldReader}
+	db.connMu.Unlock()
+
+	// Close pools from earlier reopens outside connMu. database/sql
+	// may wait for active rows to finish, and that wait must not
+	// block new reads from acquiring the guarded current reader.
+	for _, p := range retired {
+		if err := p.Close(); err != nil {
+			log.Printf(
+				"warning: closing retired db pool: %v", err,
+			)
+		}
+	}
 	return nil
 }
 
@@ -1454,8 +1550,8 @@ func (db *DB) Update(fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
-// Reader returns the read-only connection pool.
-func (db *DB) Reader() *sql.DB {
+// Reader returns guarded read-only query access.
+func (db *DB) Reader() Reader {
 	return db.getReader()
 }
 

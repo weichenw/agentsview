@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // ErrJobExists is returned by Create when a job ID already exists.

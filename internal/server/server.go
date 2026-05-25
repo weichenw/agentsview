@@ -14,13 +14,13 @@ import (
 	gosync "sync"
 	"time"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/insight"
-	"github.com/wesm/agentsview/internal/scheduler"
-	"github.com/wesm/agentsview/internal/service"
-	"github.com/wesm/agentsview/internal/sync"
-	"github.com/wesm/agentsview/internal/web"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/insight"
+	"go.kenn.io/agentsview/internal/scheduler"
+	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/web"
 )
 
 // VersionInfo holds build-time version metadata.
@@ -254,6 +254,10 @@ func WithGenerateStreamFunc(f insight.GenerateStreamFunc) Option {
 func (s *Server) routes() {
 	// API v1 routes
 	s.mux.Handle("GET /api/v1/sessions", s.withTimeout(s.handleListSessions))
+	s.mux.Handle(
+		"GET /api/v1/sessions/sidebar-index",
+		s.withTimeout(s.handleSidebarSessionIndex),
+	)
 	s.mux.Handle("GET /api/v1/sessions/{id}", s.withTimeout(s.handleGetSession))
 	s.mux.Handle(
 		"GET /api/v1/sessions/{id}/messages", s.withTimeout(s.handleGetMessages),
@@ -324,11 +328,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/insights/generate", s.handleGenerateInsight)
 
 	s.mux.Handle("GET /api/v1/search", s.withTimeout(s.handleSearch))
+	s.mux.Handle("GET /api/v1/search/content", s.withTimeout(s.handleSearchContent))
+	s.mux.Handle("GET /api/v1/secrets", s.withTimeout(s.handleListSecrets))
 	s.mux.Handle("GET /api/v1/projects", s.withTimeout(s.handleListProjects))
 	s.mux.Handle("GET /api/v1/machines", s.withTimeout(s.handleListMachines))
 	s.mux.Handle("GET /api/v1/agents", s.withTimeout(s.handleListAgents))
 	s.mux.Handle("GET /api/v1/stats", s.withTimeout(s.handleGetStats))
 	s.mux.Handle("GET /api/v1/version", s.withTimeout(s.handleGetVersion))
+	s.mux.HandleFunc("POST /api/v1/secrets/scan", s.handleScanSecrets)
 	s.mux.HandleFunc("POST /api/v1/sync", s.handleTriggerSync)
 	s.mux.HandleFunc("POST /api/v1/resync", s.handleTriggerResync)
 	s.mux.Handle("GET /api/v1/sync/status", s.withTimeout(s.handleSyncStatus))
@@ -555,7 +562,7 @@ func (s *Server) Handler() http.Handler {
 	if bindAll {
 		bindAllIPs = localInterfaceIPs()
 	}
-	h := cspMiddleware(s.cfg.Host, s.cfg.Port, s.cfg.PublicOrigins, bindAllIPs, s.basePath,
+	h := cspMiddleware(s.cfg.Host, s.cfg.Port, s.basePath,
 		s.authMiddleware(
 			hostCheckMiddleware(
 				allowedHosts, bindAll, s.cfg.Port, bindAllIPs,
@@ -595,8 +602,8 @@ func (s *Server) Handler() http.Handler {
 // responses. The policy pins the exact host:port origin so that
 // even if Tauri's compile-time CSP uses a wildcard port, the
 // intersection narrows to the actual runtime port.
-func cspMiddleware(host string, port int, publicOrigins []string, bindAllIPs map[string]bool, basePath string, next http.Handler) http.Handler {
-	policy := buildCSPPolicy(host, port, publicOrigins, bindAllIPs, basePath)
+func cspMiddleware(host string, port int, basePath string, next http.Handler) http.Handler {
+	policy := buildCSPPolicy(host, port, basePath)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Security-Policy", policy)
@@ -607,77 +614,29 @@ func cspMiddleware(host string, port int, publicOrigins []string, bindAllIPs map
 }
 
 // buildCSPPolicy constructs the Content-Security-Policy string.
-// It uses the same loopback/bind-all logic as buildAllowedOrigins
-// to handle IPv6 bracketing, 0.0.0.0/:: normalization, and
-// public origins (proxy/TLS).
 //
-// The server's own origin (host:port) is included explicitly in
-// all directives because WebKitGTK in a Tauri webview may not
-// resolve 'self' to the Go server origin after navigating from
-// tauri://localhost. Public origins and LAN IPs are restricted
-// to connect-src only to limit the script execution surface.
-func buildCSPPolicy(host string, port int, publicOrigins []string, bindAllIPs map[string]bool, basePath string) string {
+// The server's own origin (host:port) is pinned in the resource
+// directives (default/script/img/style/font) because WebKitGTK in a
+// Tauri webview may not resolve 'self' to the Go server origin after
+// navigating from tauri://localhost.
+//
+// connect-src is intentionally widened to any http/https/ws/wss
+// origin. The "Connect to Remote Server" feature (see
+// frontend/src/lib/api/client.ts) lets the user point the SPA at an
+// arbitrary remote agentsview API origin stored client-side, which
+// this server cannot know when the policy is built. This mirrors the
+// backend, where authenticated remote requests already bypass the
+// host-check and CORS restrictions (see isRemoteAuth in auth.go and
+// corsMiddleware). Security tradeoff: a broad connect-src means that
+// if an XSS ever executed in the app, exfiltration would be easier;
+// the other directives stay pinned so script execution remains gated
+// to 'self'.
+func buildCSPPolicy(host string, port int, basePath string) string {
 	// serverOrigin is the pinned http origin for the configured
-	// host:port, used in all directives so resources load
+	// host:port, used in the resource directives so resources load
 	// correctly regardless of how the webview resolves 'self'.
 	serverOrigin := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
-
-	// connectSrcs collects additional origins for connect-src
-	// (fetch, SSE, WebSocket) — loopback variants, LAN IPs,
-	// and public/proxy origins.
-	connectHTTP := []string{}
-	connectWS := []string{}
-
-	addConnectOrigin := func(h string) {
-		for _, o := range httpOrigin(h, port) {
-			connectHTTP = append(connectHTTP, o)
-			connectWS = append(connectWS, strings.Replace(o, "http://", "ws://", 1))
-		}
-	}
-
-	// Mirror buildAllowedOrigins: when binding to loopback,
-	// include the other loopback variant. When binding to all
-	// interfaces, include all loopback origins plus every
-	// concrete interface IP.
-	switch host {
-	case "127.0.0.1":
-		addConnectOrigin("localhost")
-	case "localhost":
-		addConnectOrigin("127.0.0.1")
-	case "0.0.0.0", "::":
-		addConnectOrigin("127.0.0.1")
-		addConnectOrigin("localhost")
-		addConnectOrigin("::1")
-		for ip := range bindAllIPs {
-			if ip != "127.0.0.1" && ip != "::1" {
-				addConnectOrigin(ip)
-			}
-		}
-	case "::1":
-		addConnectOrigin("127.0.0.1")
-		addConnectOrigin("localhost")
-	}
-
-	for _, origin := range publicOrigins {
-		connectHTTP = append(connectHTTP, origin)
-		connectWS = append(connectWS,
-			strings.NewReplacer(
-				"https://", "wss://",
-				"http://", "ws://",
-			).Replace(origin),
-		)
-	}
-
-	// resource-src: 'self' + pinned server origin (for all resource types)
 	resourceSrc := "'self' " + serverOrigin
-
-	// connect-src: resource-src + loopback/LAN/public origins + ws variants
-	connectParts := []string{resourceSrc}
-	wsOrigin := "ws://" + net.JoinHostPort(host, strconv.Itoa(port))
-	connectParts = append(connectParts, wsOrigin)
-	connectParts = append(connectParts, connectHTTP...)
-	connectParts = append(connectParts, connectWS...)
-	connectSrc := strings.Join(connectParts, " ")
 
 	baseURI := "'none'"
 	if basePath != "" {
@@ -687,14 +646,14 @@ func buildCSPPolicy(host string, port int, publicOrigins []string, bindAllIPs ma
 	return fmt.Sprintf(
 		"default-src %[1]s; "+
 			"script-src %[1]s; "+
-			"connect-src %[2]s; "+
+			"connect-src 'self' http: https: ws: wss:; "+
 			"img-src %[1]s data:; "+
 			"style-src %[1]s 'unsafe-inline' https://fonts.googleapis.com; "+
 			"font-src %[1]s data: https://fonts.gstatic.com; "+
 			"object-src 'none'; "+
-			"base-uri %[3]s; "+
+			"base-uri %[2]s; "+
 			"frame-ancestors 'none'",
-		resourceSrc, connectSrc, baseURI,
+		resourceSrc, baseURI,
 	)
 }
 

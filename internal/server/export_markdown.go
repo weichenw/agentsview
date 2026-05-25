@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
 )
 
 type exportMarkdownOptions struct {
@@ -164,11 +164,13 @@ var (
 	mdCodeBlockRe      = regexp.MustCompile("(?s)```(\\w*)\\n(.*?)```")
 )
 
-const markdownToolNames = "Tool|Read|Write|Edit|Bash|Glob|Grep|Other|TaskCreate|TaskUpdate|TaskGet|TaskList|Task|Agent|Skill|" +
+const exportToolNames = "Tool|Read|Write|Edit|Bash|Glob|Grep|Other|TaskCreate|TaskUpdate|TaskGet|TaskList|Task|Agent|" +
 	"SendMessage|Question|Todo List|Entering Plan Mode|" +
 	"Exiting Plan Mode|exec_command|shell_command|" +
 	"write_stdin|apply_patch|shell|parallel|view_image|" +
 	"request_user_input|update_plan"
+
+const markdownToolNames = exportToolNames + "|Skill"
 
 var (
 	mdToolAliases = map[string]string{

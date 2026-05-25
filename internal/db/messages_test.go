@@ -63,7 +63,7 @@ func TestWriteSessionBatchCommitsGoodRowsAndSkipsBadRows(t *testing.T) {
 				Project:          "proj",
 				Machine:          defaultMachine,
 				Agent:            defaultAgent,
-				FirstMessage:     Ptr("hello"),
+				FirstMessage:     new(string("hello")),
 				MessageCount:     2,
 				UserMessageCount: 1,
 			},
@@ -335,6 +335,7 @@ func TestReplaceSessionMessages_LargeSession(t *testing.T) {
 	}
 	t.Parallel()
 	d := testDB(t)
+	requireFTS(t, d)
 	const sessionID = "perf-large"
 	insertSession(t, d, sessionID, "proj")
 

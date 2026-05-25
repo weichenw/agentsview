@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/wesm/agentsview/internal/db"
-	"github.com/wesm/agentsview/internal/service"
-	"github.com/wesm/agentsview/internal/timeutil"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 func (s *Server) handleListSessions(
@@ -26,6 +26,80 @@ func (s *Server) handleListSessions(
 	// (e.g. limit=1000 returns 500, not the default). The service
 	// also clamps, so setting filter.Limit=limit makes that a no-op.
 	limit = clampLimit(limit, db.DefaultSessionLimit, db.MaxSessionLimit)
+
+	minMsgs, ok := parseIntParam(w, r, "min_messages")
+	if !ok {
+		return
+	}
+	maxMsgs, ok := parseIntParam(w, r, "max_messages")
+	if !ok {
+		return
+	}
+	minUserMsgs, ok := parseIntParam(w, r, "min_user_messages")
+	if !ok {
+		return
+	}
+
+	date := q.Get("date")
+	dateFrom := q.Get("date_from")
+	dateTo := q.Get("date_to")
+	activeSince := q.Get("active_since")
+	if !validateDateFilters(w, date, dateFrom, dateTo, activeSince) {
+		return
+	}
+
+	filter := service.ListFilter{
+		Project:          q.Get("project"),
+		ExcludeProject:   q.Get("exclude_project"),
+		Machine:          q.Get("machine"),
+		Agent:            q.Get("agent"),
+		Date:             date,
+		DateFrom:         dateFrom,
+		DateTo:           dateTo,
+		ActiveSince:      activeSince,
+		MinMessages:      minMsgs,
+		MaxMessages:      maxMsgs,
+		MinUserMessages:  minUserMsgs,
+		IncludeOneShot:   q.Get("include_one_shot") == "true",
+		IncludeAutomated: q.Get("include_automated") == "true",
+		IncludeChildren:  q.Get("include_children") == "true",
+		Outcome:          q.Get("outcome"),
+		HealthGrade:      q.Get("health_grade"),
+		Cursor:           q.Get("cursor"),
+		Limit:            limit,
+		Termination:      q.Get("termination"),
+	}
+	if v := q.Get("min_tool_failures"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest,
+				"invalid min_tool_failures parameter")
+			return
+		}
+		filter.MinToolFailures = &n
+	}
+	filter.HasSecret = q.Get("has_secret") == "true"
+
+	page, err := s.sessions.List(r.Context(), filter)
+	if err != nil {
+		if handleContextError(w, err) {
+			return
+		}
+		if errors.Is(err, db.ErrInvalidCursor) {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) handleSidebarSessionIndex(
+	w http.ResponseWriter, r *http.Request,
+) {
+	q := r.URL.Query()
 
 	minMsgs, ok := parseIntParam(w, r, "min_messages")
 	if !ok {
@@ -64,7 +138,7 @@ func (s *Server) handleListSessions(
 		return
 	}
 
-	filter := service.ListFilter{
+	filter := db.SessionFilter{
 		Project:          q.Get("project"),
 		ExcludeProject:   q.Get("exclude_project"),
 		Machine:          q.Get("machine"),
@@ -76,39 +150,22 @@ func (s *Server) handleListSessions(
 		MinMessages:      minMsgs,
 		MaxMessages:      maxMsgs,
 		MinUserMessages:  minUserMsgs,
-		IncludeOneShot:   q.Get("include_one_shot") == "true",
-		IncludeAutomated: q.Get("include_automated") == "true",
-		IncludeChildren:  q.Get("include_children") == "true",
-		Outcome:          q.Get("outcome"),
-		HealthGrade:      q.Get("health_grade"),
-		Cursor:           q.Get("cursor"),
-		Limit:            limit,
+		ExcludeOneShot:   q.Get("include_one_shot") != "true",
+		ExcludeAutomated: q.Get("include_automated") != "true",
+		IncludeChildren:  true,
 		Termination:      q.Get("termination"),
 	}
-	if v := q.Get("min_tool_failures"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			writeError(w, http.StatusBadRequest,
-				"invalid min_tool_failures parameter")
-			return
-		}
-		filter.MinToolFailures = &n
-	}
 
-	page, err := s.sessions.List(r.Context(), filter)
+	index, err := s.db.GetSidebarSessionIndex(r.Context(), filter)
 	if err != nil {
 		if handleContextError(w, err) {
-			return
-		}
-		if errors.Is(err, db.ErrInvalidCursor) {
-			writeError(w, http.StatusBadRequest, "invalid cursor")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, page)
+	writeJSON(w, http.StatusOK, index)
 }
 
 func (s *Server) handleGetSession(

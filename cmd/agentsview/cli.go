@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 	"golang.org/x/term"
 )
 
@@ -67,6 +67,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSessionCommand())
 	root.AddCommand(newStatsCommand())
 	root.AddCommand(newClassifierCommand())
+	root.AddCommand(newSecretsCommand())
 	root.AddCommand(newVersionCommand())
 
 	defaultHelp := root.HelpFunc()
@@ -135,6 +136,23 @@ func newSyncCommand() *cobra.Command {
 		&cfg.Port, "port", 0,
 		"SSH port for remote sync (default: 22)",
 	)
+	cmd.Flags().StringVar(
+		&cfg.CPUProfile, "cpuprofile", "",
+		"Write CPU profile to file (developer use)",
+	)
+	cmd.Flags().StringVar(
+		&cfg.MemProfile, "memprofile", "",
+		"Write memory profile to file (developer use)",
+	)
+	cmd.Flags().StringVar(
+		&cfg.Trace, "trace", "",
+		"Write runtime trace to file (developer use)",
+	)
+	for _, name := range []string{"cpuprofile", "memprofile", "trace"} {
+		if err := cmd.Flags().MarkHidden(name); err != nil {
+			panic(err)
+		}
+	}
 	return cmd
 }
 
@@ -432,6 +450,8 @@ func writeRootHelp(w io.Writer, root *cobra.Command) {
 	fmt.Fprintln(w, "  IFLOW_DIR               iFlow projects directory")
 	fmt.Fprintln(w, "  AMP_DIR                 Amp threads directory")
 	fmt.Fprintln(w, "  QWEN_PROJECTS_DIR       Qwen Code projects directory")
+	fmt.Fprintln(w, "  QCLAW_DIR               QClaw agents directory")
+	fmt.Fprintln(w, "  WORKBUDDY_PROJECTS_DIR  WorkBuddy projects directory")
 	fmt.Fprintln(w, "  PIEBALD_DIR             Piebald data directory")
 	fmt.Fprintln(w, "  AGENTSVIEW_DATA_DIR     Data directory (database, config)")
 	fmt.Fprintln(w, "  AGENTSVIEW_PG_URL       PostgreSQL connection URL for sync")

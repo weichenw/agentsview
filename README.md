@@ -18,7 +18,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://agentsview.io/install.ps1 | i
 ```
 
 Or download the **desktop app** (macOS / Windows) from
-[GitHub Releases](https://github.com/wesm/agentsview/releases) or via homebrew: `brew install --cask agentsview`
+[GitHub Releases](https://github.com/kenn-io/agentsview/releases) or via
+homebrew: `brew install --cask agentsview`
 
 Or run the published Docker image:
 
@@ -29,7 +30,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v "$HOME/.forge:/agents/forge:ro" \
   -e CLAUDE_PROJECTS_DIR=/agents/claude \
   -e FORGE_DIR=/agents/forge \
-  ghcr.io/wesm/agentsview:latest
+  ghcr.io/kenn-io/agentsview:latest
 ```
 
 ## Quick Start
@@ -55,10 +56,10 @@ docker compose -f docker-compose.prod.yaml up -d
 ```
 
 The included compose file persists the agentsview data directory in a named
-volume and mounts Claude, Codex, Forge, and OpenCode session roots read-only. The
-container runs as root, so prefer a named volume for `/data` over a host bind
-mount; if you do bind-mount, pre-create the directory with the desired ownership
-to avoid root-owned files in your home directory.
+volume and mounts Claude, Codex, Forge, and OpenCode session roots read-only.
+The container runs as root, so prefer a named volume for `/data` over a host
+bind mount; if you do bind-mount, pre-create the directory with the desired
+ownership to avoid root-owned files in your home directory.
 
 The examples publish the UI on loopback only (`127.0.0.1`). If you need to
 expose it beyond localhost, enable `--require-auth` and publish the port
@@ -75,7 +76,7 @@ Example PostgreSQL-backed startup:
 docker run --rm -p 127.0.0.1:8080:8080 \
   -e PG_SERVE=1 \
   -e AGENTSVIEW_PG_URL='postgres://user:password@postgres.example.com:5432/agentsview?sslmode=require' \
-  ghcr.io/wesm/agentsview:latest
+  ghcr.io/kenn-io/agentsview:latest
 ```
 
 ## Token Usage and Cost Tracking
@@ -110,6 +111,26 @@ Features:
 - JSON output (`--json`) for scripting
 - Timezone-aware date bucketing (`--timezone`)
 - Works standalone -- no server required, just run the command
+
+## Per-Session Details
+
+`agentsview session usage <id>` prints per-session token statistics plus a cost
+estimate for a single session. The output reports the session's total output
+tokens and peak context tokens, plus a cost estimate in USD (`cost_usd`) when
+pricing is available for the session's model(s) (`has_cost`). Cost is computed
+from input/output and cache tokens internally, but only the output-token and
+peak-context totals are reported alongside the cost.
+
+```bash
+# Print token usage and cost for a specific session
+agentsview session usage <id>
+
+# JSON output for scripting
+agentsview session usage <id> --format json
+```
+
+The deprecated alias `agentsview token-use <id>` remains available for
+compatibility and now also reports cost estimates.
 
 ## Session Stats
 
@@ -180,15 +201,19 @@ agentsview auto-discovers sessions from all of these:
 | Pi                 | `~/.pi/agent/sessions/`                                |
 | Qwen Code          | `~/.qwen/projects/`                                    |
 | OpenClaw           | `~/.openclaw/agents/`                                  |
+| QClaw              | `~/.qclaw/agents/`                                     |
 | Kimi               | `~/.kimi/sessions/`                                    |
-| Kiro CLI           | `~/.kiro/sessions/cli/`                                |
+| Kiro CLI           | `~/.kiro/sessions/cli/`, `~/.local/share/kiro-cli/`    |
 | Kiro IDE           | `~/Library/Application Support/Kiro/` (macOS)          |
 | Cortex Code        | `~/.snowflake/cortex/conversations/`                   |
 | Hermes Agent       | `~/.hermes/sessions/`                                  |
+| WorkBuddy          | `~/.workbuddy/projects/`                               |
 | Forge              | `~/.forge/`                                            |
 | Piebald            | `~/.local/share/piebald/`                              |
 | Warp               | `~/.warp/` (platform-dependent)                        |
 | Positron Assistant | `~/Library/Application Support/Positron/User/` (macOS) |
+| Antigravity        | `~/.gemini/antigravity/`                               |
+| Antigravity CLI    | `~/.gemini/antigravity-cli/` (summary mode)            |
 
 Each directory can be overridden with an environment variable. See the
 [configuration docs](https://agentsview.io/configuration/) for details.
@@ -220,7 +245,7 @@ Full docs at **[agentsview.io](https://agentsview.io)**:
 [Configuration](https://agentsview.io/configuration/) --
 [Architecture](https://agentsview.io/architecture/)
 
----
+______________________________________________________________________
 
 ## Development
 

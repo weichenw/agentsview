@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 type syncStateReaderStub struct {
@@ -183,6 +183,13 @@ func TestSessionPushFingerprintDiffers(t *testing.T) {
 			modify: func(s db.Session) db.Session {
 				ts := "tool_call_pending"
 				s.TerminationStatus = &ts
+				return s
+			},
+		},
+		{
+			name: "automated classification change",
+			modify: func(s db.Session) db.Session {
+				s.IsAutomated = true
 				return s
 			},
 		},

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wesm/agentsview/internal/config"
-	"github.com/wesm/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // Store wraps a PostgreSQL connection for read-only session
@@ -48,6 +48,7 @@ const pgSessionCols = `id, project, machine, agent,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
+	secret_leak_count, secrets_rules_version,
 	deleted_at, termination_status`
 
 // paramBuilder generates numbered PostgreSQL placeholders.
@@ -155,6 +156,7 @@ func scanPGSession(
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
 		&s.ParserMalformedLines, &s.IsTruncated,
+		&s.SecretLeakCount, &s.SecretsRulesVersion,
 		&deletedAt, &s.TerminationStatus,
 	)
 	if err != nil {
@@ -338,6 +340,23 @@ func buildPGSessionFilter(
 		filterPreds = append(filterPreds,
 			"tool_failure_signal_count >= "+
 				pb.add(*f.MinToolFailures))
+	}
+	if f.HasSecret {
+		pred := "secret_leak_count > 0"
+		if len(f.SecretsRulesVersions) > 0 {
+			var versionParams []string
+			for _, v := range f.SecretsRulesVersions {
+				if v == "" {
+					continue
+				}
+				versionParams = append(versionParams, pb.add(v))
+			}
+			if len(versionParams) > 0 {
+				pred += " AND secrets_rules_version IN (" +
+					strings.Join(versionParams, ",") + ")"
+			}
+		}
+		filterPreds = append(filterPreds, pred)
 	}
 
 	if !f.IncludeChildren {
@@ -559,6 +578,97 @@ func (s *Store) ListSessions(
 	}
 
 	return page, nil
+}
+
+// GetSidebarSessionIndex returns the skinny session rows needed by
+// the sidebar grouper. It intentionally has no cursor or limit.
+func (s *Store) GetSidebarSessionIndex(
+	ctx context.Context, f db.SessionFilter,
+) (db.SidebarSessionIndex, error) {
+	f.IncludeChildren = true
+	f.Cursor = ""
+	f.Limit = 0
+
+	where, args := buildPGSessionFilter(f)
+	query := `
+		SELECT
+			id,
+			parent_session_id,
+			relationship_type,
+			project,
+			machine,
+			agent,
+			display_name,
+			started_at,
+			ended_at,
+			created_at,
+			termination_status,
+			message_count,
+			user_message_count,
+			is_automated,
+			position('<teammate-message' in COALESCE(first_message, '')) > 0
+		FROM sessions
+		WHERE ` + where + `
+		ORDER BY COALESCE(
+			ended_at, started_at, created_at
+		) DESC, id DESC`
+
+	rows, err := s.pg.QueryContext(ctx, query, args...)
+	if err != nil {
+		return db.SidebarSessionIndex{},
+			fmt.Errorf("querying sidebar session index: %w", err)
+	}
+	defer rows.Close()
+
+	index := db.SidebarSessionIndex{
+		Sessions: []db.SidebarSessionIndexRow{},
+	}
+	for rows.Next() {
+		var row db.SidebarSessionIndexRow
+		var startedAt, endedAt, createdAt *time.Time
+		if err := rows.Scan(
+			&row.ID,
+			&row.ParentSessionID,
+			&row.RelationshipType,
+			&row.Project,
+			&row.Machine,
+			&row.Agent,
+			&row.DisplayName,
+			&startedAt,
+			&endedAt,
+			&createdAt,
+			&row.TerminationStatus,
+			&row.MessageCount,
+			&row.UserMessageCount,
+			&row.IsAutomated,
+			&row.IsTeammate,
+		); err != nil {
+			return db.SidebarSessionIndex{},
+				fmt.Errorf(
+					"scanning sidebar session index: %w",
+					err,
+				)
+		}
+		if startedAt != nil {
+			str := FormatISO8601(*startedAt)
+			row.StartedAt = &str
+		}
+		if endedAt != nil {
+			str := FormatISO8601(*endedAt)
+			row.EndedAt = &str
+		}
+		if createdAt != nil {
+			row.CreatedAt = FormatISO8601(*createdAt)
+		}
+		index.Sessions = append(index.Sessions, row)
+	}
+	if err := rows.Err(); err != nil {
+		return db.SidebarSessionIndex{},
+			fmt.Errorf("iterating sidebar session index: %w", err)
+	}
+	index.Total = len(index.Sessions)
+
+	return index, nil
 }
 
 // GetSession returns a single session by ID, excluding

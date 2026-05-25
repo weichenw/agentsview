@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/wesm/agentsview/internal/parser"
-	"github.com/wesm/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 func newSessionGetCommand() *cobra.Command {
@@ -141,6 +141,9 @@ func printSessionDetailHuman(w io.Writer, s *service.SessionDetail) error {
 			label("Health"), *s.HealthScore, sanitizeTerminal(grade))
 	} else {
 		fmt.Fprintf(w, "%s -\n", label("Health"))
+	}
+	if s.SecretLeakCount > 0 {
+		fmt.Fprintf(w, "%s %d\n", label("Secrets"), s.SecretLeakCount)
 	}
 	return nil
 }

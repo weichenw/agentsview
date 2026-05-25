@@ -26,6 +26,11 @@ export const KNOWN_AGENTS: readonly AgentMeta[] = [
     color: "var(--accent-orange)",
     label: "OpenClaw",
   },
+  {
+    name: "qclaw",
+    color: "var(--accent-orange)",
+    label: "QClaw",
+  },
   { name: "iflow", color: "var(--accent-sky)", label: "iFlow" },
   { name: "kimi", color: "var(--accent-pink)", label: "Kimi" },
   { name: "claude-ai", color: "var(--accent-violet)", label: "Claude.ai" },
@@ -33,7 +38,18 @@ export const KNOWN_AGENTS: readonly AgentMeta[] = [
   { name: "kiro", color: "var(--accent-lime)", label: "Kiro" },
   { name: "kiro-ide", color: "var(--accent-lime)", label: "Kiro IDE" },
   { name: "cortex", color: "var(--accent-cyan)", label: "Cortex Code" },
+  { name: "workbuddy", color: "var(--accent-violet)", label: "WorkBuddy" },
   { name: "piebald", color: "var(--accent-orange)", label: "Piebald" },
+  {
+    name: "antigravity",
+    color: "var(--accent-violet)",
+    label: "Antigravity",
+  },
+  {
+    name: "antigravity-cli",
+    color: "var(--accent-violet)",
+    label: "Antigravity CLI",
+  },
 ];
 
 const agentColorMap = new Map(

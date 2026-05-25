@@ -44,6 +44,7 @@ const sessionBaseCols = `id, project, machine, agent,
 	context_pressure_max,
 	health_score, health_grade,
 	has_tool_calls, has_context_data,
+	secret_leak_count, secrets_rules_version,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
@@ -67,6 +68,7 @@ const sessionPruneCols = `id, project, machine, agent,
 	context_pressure_max,
 	health_score, health_grade,
 	has_tool_calls, has_context_data,
+	secret_leak_count, secrets_rules_version,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
@@ -89,6 +91,7 @@ const sessionFullCols = `id, project, machine, agent,
 	context_pressure_max,
 	health_score, health_grade,
 	has_tool_calls, has_context_data,
+	secret_leak_count, secrets_rules_version,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
@@ -129,6 +132,7 @@ func scanSessionRow(rs rowScanner) (Session, error) {
 		&s.ContextPressureMax,
 		&s.HealthScore, &s.HealthGrade,
 		&s.HasToolCalls, &s.HasContextData,
+		&s.SecretLeakCount, &s.SecretsRulesVersion,
 		&s.DataVersion,
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
@@ -175,6 +179,8 @@ type Session struct {
 	HealthGrade            *string  `json:"health_grade,omitempty"`
 	HasToolCalls           bool     `json:"-"`
 	HasContextData         bool     `json:"-"`
+	SecretLeakCount        int      `json:"secret_leak_count"`
+	SecretsRulesVersion    string   `json:"-"`
 	DataVersion            int      `json:"-"`
 	Cwd                    string   `json:"cwd,omitempty"`
 	GitBranch              string   `json:"git_branch,omitempty"`
@@ -291,8 +297,13 @@ type SessionFilter struct {
 	Outcome          []string // filter by outcome values
 	HealthGrade      []string // filter by health grade values
 	MinToolFailures  *int     // minimum tool_failure_signal_count
-	Cursor           string   // opaque cursor from previous page
-	Limit            int
+	HasSecret        bool     // only sessions with current secret_leak_count > 0
+	// SecretsRulesVersions limits HasSecret to sessions scanned by one of these
+	// current scanner versions. Empty preserves raw DB semantics for tests and
+	// direct store callers that explicitly want unversioned counts.
+	SecretsRulesVersions []string
+	Cursor               string // opaque cursor from previous page
+	Limit                int
 	// Termination filters by termination_status:
 	//   "" or "all"  → no filter (default)
 	//   "clean"      → only sessions with status = 'clean'
@@ -370,6 +381,29 @@ type SessionPage struct {
 	Sessions   []Session `json:"sessions"`
 	NextCursor string    `json:"next_cursor,omitempty"`
 	Total      int       `json:"total"`
+}
+
+type SidebarSessionIndexRow struct {
+	ID                string  `json:"id"`
+	ParentSessionID   *string `json:"parent_session_id,omitempty"`
+	RelationshipType  string  `json:"relationship_type,omitempty"`
+	Project           string  `json:"project"`
+	Machine           string  `json:"machine"`
+	Agent             string  `json:"agent"`
+	DisplayName       *string `json:"display_name,omitempty"`
+	StartedAt         *string `json:"started_at"`
+	EndedAt           *string `json:"ended_at"`
+	CreatedAt         string  `json:"created_at"`
+	TerminationStatus *string `json:"termination_status,omitempty"`
+	MessageCount      int     `json:"message_count"`
+	UserMessageCount  int     `json:"user_message_count"`
+	IsAutomated       bool    `json:"is_automated"`
+	IsTeammate        bool    `json:"is_teammate"`
+}
+
+type SidebarSessionIndex struct {
+	Sessions []SidebarSessionIndexRow `json:"sessions"`
+	Total    int                      `json:"total"`
 }
 
 // buildSessionFilter returns a WHERE clause and args for the
@@ -527,6 +561,24 @@ func buildSessionFilter(f SessionFilter) (string, []any) {
 			"tool_failure_signal_count >= ?")
 		filterArgs = append(filterArgs, *f.MinToolFailures)
 	}
+	if f.HasSecret {
+		pred := "secret_leak_count > 0"
+		if len(f.SecretsRulesVersions) > 0 {
+			placeholders := make([]string, 0, len(f.SecretsRulesVersions))
+			for _, v := range f.SecretsRulesVersions {
+				if v == "" {
+					continue
+				}
+				placeholders = append(placeholders, "?")
+				filterArgs = append(filterArgs, v)
+			}
+			if len(placeholders) > 0 {
+				pred += " AND secrets_rules_version IN (" +
+					strings.Join(placeholders, ",") + ")"
+			}
+		}
+		filterPreds = append(filterPreds, pred)
+	}
 
 	// Simple case: children not included — basePreds already
 	// carries the relationship_type guard, so subagent/fork
@@ -658,6 +710,84 @@ func (db *DB) ListSessions(
 	return page, nil
 }
 
+// GetSidebarSessionIndex returns the skinny session rows needed by
+// the sidebar grouper. It intentionally has no cursor or limit.
+func (db *DB) GetSidebarSessionIndex(
+	ctx context.Context, f SessionFilter,
+) (SidebarSessionIndex, error) {
+	f.IncludeChildren = true
+	f.Cursor = ""
+	f.Limit = 0
+
+	where, args := buildSessionFilter(f)
+	query := `
+		SELECT
+			id,
+			parent_session_id,
+			relationship_type,
+			project,
+			machine,
+			agent,
+			display_name,
+			started_at,
+			ended_at,
+			created_at,
+			termination_status,
+			message_count,
+			user_message_count,
+			is_automated,
+			INSTR(COALESCE(first_message, ''), '<teammate-message') > 0
+		FROM sessions
+		WHERE ` + where + `
+		ORDER BY COALESCE(
+			NULLIF(ended_at, ''),
+			NULLIF(started_at, ''),
+			created_at
+		) DESC, id DESC`
+
+	rows, err := db.getReader().QueryContext(ctx, query, args...)
+	if err != nil {
+		return SidebarSessionIndex{},
+			fmt.Errorf("querying sidebar session index: %w", err)
+	}
+	defer rows.Close()
+
+	index := SidebarSessionIndex{
+		Sessions: []SidebarSessionIndexRow{},
+	}
+	for rows.Next() {
+		var row SidebarSessionIndexRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.ParentSessionID,
+			&row.RelationshipType,
+			&row.Project,
+			&row.Machine,
+			&row.Agent,
+			&row.DisplayName,
+			&row.StartedAt,
+			&row.EndedAt,
+			&row.CreatedAt,
+			&row.TerminationStatus,
+			&row.MessageCount,
+			&row.UserMessageCount,
+			&row.IsAutomated,
+			&row.IsTeammate,
+		); err != nil {
+			return SidebarSessionIndex{},
+				fmt.Errorf("scanning sidebar session index: %w", err)
+		}
+		index.Sessions = append(index.Sessions, row)
+	}
+	if err := rows.Err(); err != nil {
+		return SidebarSessionIndex{},
+			fmt.Errorf("iterating sidebar session index: %w", err)
+	}
+	index.Total = len(index.Sessions)
+
+	return index, nil
+}
+
 // GetSession returns a single session by ID, excluding
 // soft-deleted (trashed) sessions.
 func (db *DB) GetSession(
@@ -707,6 +837,7 @@ func (db *DB) GetSessionFull(
 		&s.ContextPressureMax,
 		&s.HealthScore, &s.HealthGrade,
 		&s.HasToolCalls, &s.HasContextData,
+		&s.SecretLeakCount, &s.SecretsRulesVersion,
 		&s.DataVersion,
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
@@ -1622,6 +1753,7 @@ func (db *DB) FindPruneCandidates(
 			&s.ContextPressureMax,
 			&s.HealthScore, &s.HealthGrade,
 			&s.HasToolCalls, &s.HasContextData,
+			&s.SecretLeakCount, &s.SecretsRulesVersion,
 			&s.DataVersion,
 			&s.Cwd, &s.GitBranch,
 			&s.SourceSessionID, &s.SourceVersion,
@@ -1898,6 +2030,7 @@ func (db *DB) ListSessionsModifiedBetween(
 			&s.ContextPressureMax,
 			&s.HealthScore, &s.HealthGrade,
 			&s.HasToolCalls, &s.HasContextData,
+			&s.SecretLeakCount, &s.SecretsRulesVersion,
 			&s.DataVersion,
 			&s.Cwd, &s.GitBranch,
 			&s.SourceSessionID, &s.SourceVersion,
