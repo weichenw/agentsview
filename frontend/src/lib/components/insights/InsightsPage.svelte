@@ -234,14 +234,12 @@
         />
       {/if}
 
-      <div class="controls-row">
-        <span class="pi-disabled-wrapper" class:pi-disabled={insights.agent === "pi"}>
-          <ProjectTypeahead
-            projects={sessions.projects}
-            value={insights.project}
-            onselect={handleProjectChange}
-          />
-        </span>
+      <div class="controls-row" class:pi-disabled-row={insights.agent === "pi"}>
+        <ProjectTypeahead
+          projects={sessions.projects}
+          value={insights.project}
+          onselect={handleProjectChange}
+        />
         <select
           class="ctrl agent-ctrl"
           value={insights.agent}
@@ -1580,15 +1578,13 @@
     border-radius: var(--radius-md);
   }
 
-  .pi-disabled-wrapper {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .pi-disabled-wrapper.pi-disabled {
-    pointer-events: none;
+  .pi-disabled-row {
     opacity: 0.45;
     cursor: not-allowed;
+  }
+
+  .pi-disabled-row :global(.typeahead) {
+    pointer-events: none;
   }
 
   .pi-loading-text {
