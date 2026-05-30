@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -422,4 +424,25 @@ func (s *Server) handleGenerateInsight(
 	}
 
 	sendJSON("done", saved)
+}
+
+func (s *Server) handlePiSight(w http.ResponseWriter, r *http.Request) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot determine home directory")
+		return
+	}
+
+	path := filepath.Join(home, ".pi", "agents", "data", "pi-sight", "pi-insight report.html")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, "pi sight report not found at ~/.pi/agents/data/pi-sight/pi-insight report.html")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"content": string(data)})
 }

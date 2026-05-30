@@ -19,12 +19,17 @@ export interface InsightsResponse {
   insights: Insight[];
 }
 
+export interface PiSightResponse {
+  content: string;
+}
+
 export type AgentName =
   | "claude"
   | "codex"
   | "copilot"
   | "gemini"
-  | "kiro";
+  | "kiro"
+  | "pi";
 
 export interface GenerateInsightRequest {
   type: InsightType;

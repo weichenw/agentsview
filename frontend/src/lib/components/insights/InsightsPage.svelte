@@ -173,6 +173,12 @@
     sessions.loadProjects();
     insights.load();
   });
+
+  $effect(() => {
+    if (insights.agent === "pi") {
+      insights.loadPiSight();
+    }
+  });
 </script>
 
 <div class="insights-page">
@@ -240,41 +246,52 @@
           <option value="copilot">Copilot</option>
           <option value="gemini">Gemini</option>
           <option value="kiro">Kiro</option>
+          <option value="pi">Pi</option>
         </select>
       </div>
 
-      {#if promptExpanded}
-        <textarea
-          class="prompt-area"
-          placeholder="Steer the insight with additional context..."
-          bind:value={insights.promptText}
-          rows="3"
-        ></textarea>
-      {/if}
+      {#if insights.agent !== "pi"}
+        {#if promptExpanded}
+          <textarea
+            class="prompt-area"
+            placeholder="Steer the insight with additional context..."
+            bind:value={insights.promptText}
+            rows="3"
+          ></textarea>
+        {/if}
 
-      <div class="action-row">
-        <button
-          class="prompt-toggle"
-          onclick={() => promptExpanded = !promptExpanded}
-          title={promptExpanded ? "Hide prompt" : "Add custom prompt"}
-        >
-          <PencilIcon size="12" strokeWidth="2" aria-hidden="true" />
-          {promptExpanded ? "Hide" : "Prompt"}
-        </button>
-        <button
-          class="generate-btn"
-          onclick={handleGenerate}
-          disabled={insights.loading || generationUnavailable}
-          title={readOnly
-            ? "Unavailable in read-only remote mode"
-            : sync.serverVersion === null
-              ? "Waiting for server version"
-              : "Generate insight"}
-        >
-          <PlusIcon class="generate-icon" size="12" strokeWidth="2.2" aria-hidden="true" />
-          Generate
-        </button>
-      </div>
+        <div class="action-row">
+          <button
+            class="prompt-toggle"
+            onclick={() => promptExpanded = !promptExpanded}
+            title={promptExpanded ? "Hide prompt" : "Add custom prompt"}
+          >
+            <PencilIcon size="12" strokeWidth="2" aria-hidden="true" />
+            {promptExpanded ? "Hide" : "Prompt"}
+          </button>
+          <button
+            class="generate-btn"
+            onclick={handleGenerate}
+            disabled={insights.loading || generationUnavailable}
+            title={readOnly
+              ? "Unavailable in read-only remote mode"
+              : sync.serverVersion === null
+                ? "Waiting for server version"
+                : "Generate insight"}
+          >
+            <PlusIcon class="generate-icon" size="12" strokeWidth="2.2" aria-hidden="true" />
+            Generate
+          </button>
+        </div>
+      {:else if insights.piSightLoading}
+        <div class="action-row">
+          <span class="pi-loading-text">Loading Pi Sight...</span>
+        </div>
+      {:else if insights.piSightError}
+        <div class="action-row">
+          <span class="pi-error-text">{insights.piSightError}</span>
+        </div>
+      {/if}
       {#if readOnly}
         <div class="readonly-note">
           Read-only remote mode cannot save generated insights.
@@ -361,14 +378,31 @@
       {#if insights.loading}
         <div class="list-status">Loading...</div>
       {:else if insights.items.length === 0 && insights.tasks.length === 0}
-        <div class="empty-state">
-          <div class="empty-glyph">
-            <LightbulbIcon size="28" strokeWidth="1.5" aria-hidden="true" />
+        {#if insights.agent === "pi"}
+          {#if insights.piSightLoading}
+            <div class="list-status">Loading sight...</div>
+          {:else if insights.piSightError}
+            <div class="list-status error">{insights.piSightError}</div>
+          {:else}
+            <div class="empty-state">
+              <div class="empty-glyph">
+                <LightbulbIcon size="28" strokeWidth="1.5" aria-hidden="true" />
+              </div>
+              <span class="empty-text">
+                Pi Sight report loaded in the main panel
+              </span>
+            </div>
+          {/if}
+        {:else}
+          <div class="empty-state">
+            <div class="empty-glyph">
+              <LightbulbIcon size="28" strokeWidth="1.5" aria-hidden="true" />
+            </div>
+            <span class="empty-text">
+              Generate an insight to analyze your sessions
+            </span>
           </div>
-          <span class="empty-text">
-            Generate an insight to analyze your sessions
-          </span>
-        </div>
+        {/if}
       {:else}
         {#if insights.tasks.length > 0}
           <div class="list-section-header completed-header">
@@ -408,7 +442,21 @@
   </div>
 
   <main class="content-panel">
-    {#if insights.selectedTask}
+    {#if insights.agent === "pi" && insights.piSightContent}
+      <div class="reading-area">
+        <header class="insight-header">
+          <div class="header-top">
+            <span class="header-badge badge-blue">Pi Sight</span>
+            <span class="header-date">Auto-generated report</span>
+          </div>
+        </header>
+        <iframe
+          class="pi-sight-iframe"
+          title="Pi Sight"
+          srcdoc={insights.piSightContent}
+        ></iframe>
+      </div>
+    {:else if insights.selectedTask}
       {@const task = insights.selectedTask}
       <div class="reading-area">
         <header class="insight-header">
@@ -530,7 +578,27 @@
       </div>
     {:else}
       <div class="content-empty">
-        {#if insights.items.length > 0}
+        {#if insights.agent === "pi"}
+          {#if insights.piSightLoading}
+            <div class="content-generating">
+              <div class="gen-orbit">
+                <span class="orbit-ring"></span>
+                <span class="orbit-dot"></span>
+              </div>
+              <span class="gen-label">Loading Pi Sight...</span>
+            </div>
+          {:else if insights.piSightError}
+            <div class="empty-prompt">
+              <TriangleAlertIcon size="20" strokeWidth="1.5" aria-hidden="true" />
+              <span>{insights.piSightError}</span>
+            </div>
+          {:else}
+            <div class="empty-prompt">
+              <LightbulbIcon size="20" strokeWidth="1.5" aria-hidden="true" />
+              <span>Select Pi agent to load the sight report</span>
+            </div>
+          {/if}
+        {:else if insights.items.length > 0}
           <div class="empty-prompt">
             <MousePointer2Icon size="20" strokeWidth="1.5" aria-hidden="true" />
             <span>Select an insight to view</span>
@@ -1491,5 +1559,23 @@
   @keyframes orbit {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+  }
+
+  .pi-sight-iframe {
+    width: 100%;
+    min-height: calc(100vh - 40px - 24px - 100px);
+    min-height: calc(100dvh - 40px - 24px - 100px);
+    border: none;
+    border-radius: var(--radius-md);
+  }
+
+  .pi-loading-text {
+    font-size: 11px;
+    color: var(--accent-blue);
+  }
+
+  .pi-error-text {
+    font-size: 11px;
+    color: var(--accent-red);
   }
 </style>

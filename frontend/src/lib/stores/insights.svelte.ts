@@ -7,6 +7,7 @@ import {
   listInsights,
   deleteInsight,
   generateInsight,
+  fetchPiSight,
   ApiError,
   type GenerateInsightHandle,
   type InsightLogEvent,
@@ -50,6 +51,10 @@ class InsightsStore {
 
   #handles = new Map<string, GenerateInsightHandle>();
   #version = 0;
+
+  piSightContent: string | null = $state(null);
+  piSightError: string | null = $state(null);
+  piSightLoading = $state(false);
 
   get selectedItem(): Insight | undefined {
     return this.items.find(
@@ -115,6 +120,21 @@ class InsightsStore {
 
   setAgent(agent: AgentName) {
     this.agent = agent;
+  }
+
+  async loadPiSight() {
+    this.piSightLoading = true;
+    this.piSightError = null;
+    try {
+      const res = await fetchPiSight();
+      this.piSightContent = res.content;
+    } catch (e) {
+      this.piSightError =
+        e instanceof Error ? e.message : "Failed to load Pi Sight";
+      this.piSightContent = null;
+    } finally {
+      this.piSightLoading = false;
+    }
   }
 
   select(id: number) {

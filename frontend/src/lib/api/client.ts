@@ -34,6 +34,7 @@ import type {
   Insight,
   InsightsResponse,
   GenerateInsightRequest,
+  PiSightResponse,
   PinsResponse,
   TrashResponse,
   UsageSummaryResponse,
@@ -1054,6 +1055,10 @@ export async function deleteInsight(id: number): Promise<void> {
   if (!res.ok) {
     throw new ApiError(res.status, await responseErrorMessage(res));
   }
+}
+
+export function fetchPiSight(): Promise<PiSightResponse> {
+  return fetchJSON("/insights/pi-sight");
 }
 
 export interface GenerateInsightHandle {
