@@ -188,6 +188,7 @@
         class="ctrl mode-ctrl"
         value={uiMode}
         onchange={handleModeChange}
+        disabled={insights.agent === "pi"}
       >
         <option value="daily_activity">Daily Activity</option>
         <option value="range_activity">Date Range Activity</option>
@@ -204,6 +205,7 @@
                 class="ctrl date-ctrl"
                 value={insights.dateFrom}
                 onchange={handleDateFromChange}
+                disabled={insights.agent === "pi"}
               />
             </label>
             <label class="date-label">
@@ -213,12 +215,13 @@
                 class="ctrl date-ctrl"
                 value={insights.dateTo}
                 onchange={handleDateToChange}
+                disabled={insights.agent === "pi"}
               />
             </label>
           </div>
           <div class="presets-row">
-            <button class="preset-btn" onclick={() => setPreset(6)}>Last 7 days</button>
-            <button class="preset-btn" onclick={() => setPreset(29)}>Last 30 days</button>
+            <button class="preset-btn" onclick={() => setPreset(6)} disabled={insights.agent === "pi"}>Last 7 days</button>
+            <button class="preset-btn" onclick={() => setPreset(29)} disabled={insights.agent === "pi"}>Last 30 days</button>
           </div>
         </div>
       {:else}
@@ -227,15 +230,18 @@
           class="ctrl date-ctrl"
           value={insights.dateFrom}
           onchange={handleDateChange}
+          disabled={insights.agent === "pi"}
         />
       {/if}
 
       <div class="controls-row">
-        <ProjectTypeahead
-          projects={sessions.projects}
-          value={insights.project}
-          onselect={handleProjectChange}
-        />
+        <span class="pi-disabled-wrapper" class:pi-disabled={insights.agent === "pi"}>
+          <ProjectTypeahead
+            projects={sessions.projects}
+            value={insights.project}
+            onselect={handleProjectChange}
+          />
+        </span>
         <select
           class="ctrl agent-ctrl"
           value={insights.agent}
@@ -453,7 +459,7 @@
         <iframe
           class="pi-sight-iframe"
           title="Pi Insights"
-          srcdoc={insights.piSightContent}
+          src="/api/v1/insights/pi-sight/file"
         ></iframe>
       </div>
     {:else if insights.selectedTask}
@@ -723,6 +729,11 @@
   .preset-btn:hover {
     background: var(--bg-surface-hover);
     color: var(--text-secondary);
+  }
+
+  .preset-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .prompt-area {
@@ -1567,6 +1578,17 @@
     min-height: calc(100dvh - 40px - 24px - 100px);
     border: none;
     border-radius: var(--radius-md);
+  }
+
+  .pi-disabled-wrapper {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pi-disabled-wrapper.pi-disabled {
+    pointer-events: none;
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .pi-loading-text {

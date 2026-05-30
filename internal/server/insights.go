@@ -437,7 +437,7 @@ func (s *Server) handlePiSight(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			writeError(w, http.StatusNotFound, "pi sight report not found at ~/.pi/agent/data/pi-insights/report.html")
+			writeError(w, http.StatusNotFound, "pi insights report not found at ~/.pi/agent/data/pi-insights/report.html")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -445,4 +445,15 @@ func (s *Server) handlePiSight(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"content": string(data)})
+}
+
+func (s *Server) handlePiSightFile(w http.ResponseWriter, r *http.Request) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot determine home directory")
+		return
+	}
+
+	path := filepath.Join(home, ".pi", "agent", "data", "pi-insights", "report.html")
+	http.ServeFile(w, r, path)
 }
