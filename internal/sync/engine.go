@@ -1478,6 +1478,11 @@ func (e *Engine) ResyncAll(
 		time.Since(tInsights).Round(time.Millisecond),
 	)
 
+	if err := newDB.CopySchedulerRunsFrom(origPath); err != nil {
+		log.Printf("resync: copy scheduler runs: %v", err)
+		// Non-fatal: scheduler history is auxiliary data.
+	}
+
 	// Copy orphaned sessions (source files gone) from the
 	// old DB so archived data is preserved. Failure aborts
 	// the swap to avoid losing archived sessions.
