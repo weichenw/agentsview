@@ -44,6 +44,29 @@ On first run, agentsview discovers sessions from every supported agent on your
 machine, syncs them into a local SQLite database, and opens a web UI at
 `http://127.0.0.1:8080`.
 
+## Remote / forwarded access
+
+agentsview binds to loopback and validates the request `Host` header to guard
+against DNS-rebinding attacks. When you reach it through SSH port-forwarding, a
+reverse proxy, or a remote dev environment (exe.dev, Codespaces, Coder, WSL2),
+the browser sends a `Host` that the server does not recognize, so API requests
+such as `/api/v1/settings` are rejected with `403 Forbidden`.
+
+To fix this, restart the server with `--public-url` set to the exact origin you
+open in the browser:
+
+```bash
+# Browser opens http://127.0.0.1:18080 via `ssh -L 18080:127.0.0.1:8080 host`
+agentsview serve --public-url http://127.0.0.1:18080
+
+# Browser opens a forwarded hostname
+agentsview serve --public-url https://your-workspace.exe.dev
+```
+
+Use `--public-origin` (repeatable or comma-separated) to trust additional
+browser origins. If you expose the UI beyond loopback, also enable
+`--require-auth`.
+
 ## Docker
 
 The container image defaults to local `agentsview serve`. Set `PG_SERVE=1` to
@@ -213,10 +236,43 @@ agentsview auto-discovers sessions from all of these:
 | Warp               | `~/.warp/` (platform-dependent)                        |
 | Positron Assistant | `~/Library/Application Support/Positron/User/` (macOS) |
 | Antigravity        | `~/.gemini/antigravity/`                               |
-| Antigravity CLI    | `~/.gemini/antigravity-cli/` (summary mode)            |
+| Antigravity CLI    | `~/.gemini/antigravity-cli/` (see note below)          |
 
 Each directory can be overridden with an environment variable. See the
 [configuration docs](https://agentsview.io/configuration/) for details.
+
+### Antigravity CLI: high-resolution transcripts
+
+By default, agentsview indexes Antigravity CLI sessions in **summary mode**:
+your prompts from `history.jsonl` plus any plain-text artifacts under `brain/`
+(plans, walkthroughs, checkpoints). Assistant turns and tool calls live in
+AES-GCM-encrypted `.pb` files and are not visible in this mode.
+
+To unlock full transcripts, run
+[agy-reader](https://github.com/mjacobs/agy-reader) alongside agentsview.
+agy-reader talks to the local Antigravity daemon, decrypts each conversation,
+and writes a `<uuid>.trajectory.json` sidecar next to the encrypted `.pb` file.
+agentsview's file watcher detects the sidecar automatically and parses it in
+place of summary mode -- no agentsview restart needed.
+
+```bash
+go install github.com/mjacobs/agy-reader@latest
+
+# Generate sidecars for existing sessions...
+agy-reader --sync
+
+# ...or keep them fresh as you work.
+agy-reader --watch
+```
+
+agy-reader auto-discovers the Antigravity daemon URL by parsing
+`~/.gemini/antigravity-cli/cli.log`. If discovery fails (e.g. the log has
+rotated), the command prints platform-specific instructions for locating the
+port and exporting `ANTIGRAVITY_DAEMON_URL` manually.
+
+Sidecars stay on your machine. agentsview makes no outbound request to produce
+or read them, and treats sidecars as untrusted structured input -- see
+[SECURITY.md](SECURITY.md) for the trust model.
 
 ## PostgreSQL Sync
 
@@ -225,6 +281,45 @@ Push session data to a shared PostgreSQL instance for team dashboards:
 ```bash
 agentsview pg push       # push local data to PG
 agentsview pg serve      # serve web UI from PG (read-only)
+```
+
+### Automatic push (background service)
+
+To keep a shared PostgreSQL database current without running `pg push` by
+hand, run the auto-push daemon. It watches your session directories and
+pushes shortly after new sessions are recorded, with a periodic floor as a
+safety net:
+
+```bash
+agentsview pg push --watch                 # foreground, Ctrl-C to stop
+agentsview pg push --watch --debounce 1m   # custom coalesce window
+agentsview pg push --watch --interval 5m   # custom floor interval
+```
+
+The daemon reads the same `[pg]` config as `pg push`, so the PostgreSQL
+DSN must be set in your config file (or an environment variable it
+expands). Protect the config file, since it holds credentials:
+
+```bash
+chmod 600 ~/.agentsview/config.toml
+```
+
+To run it unattended as an OS service (launchd on macOS,
+`systemd --user` on Linux):
+
+```bash
+agentsview pg service install     # generate the unit, enable + start it
+agentsview pg service status      # show manager status
+agentsview pg service logs -f     # follow the service log
+agentsview pg service uninstall   # stop and remove
+```
+
+**Linux headless machines:** systemd `--user` services stop at logout and
+do not start at boot unless lingering is enabled for your user. `install`
+detects this and prints the command; you can also run it yourself:
+
+```bash
+loginctl enable-linger "$USER"
 ```
 
 See [PostgreSQL docs](https://agentsview.io/postgresql/) for setup and
