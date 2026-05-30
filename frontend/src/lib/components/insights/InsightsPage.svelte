@@ -285,7 +285,7 @@
         </div>
       {:else if insights.piSightLoading}
         <div class="action-row">
-          <span class="pi-loading-text">Loading Pi Sight...</span>
+          <span class="pi-loading-text">Loading Pi Insights...</span>
         </div>
       {:else if insights.piSightError}
         <div class="action-row">
@@ -389,7 +389,7 @@
                 <LightbulbIcon size="28" strokeWidth="1.5" aria-hidden="true" />
               </div>
               <span class="empty-text">
-                Pi Sight report loaded in the main panel
+                Pi Insights report loaded in the main panel
               </span>
             </div>
           {/if}
@@ -446,13 +446,13 @@
       <div class="reading-area">
         <header class="insight-header">
           <div class="header-top">
-            <span class="header-badge badge-blue">Pi Sight</span>
+            <span class="header-badge badge-blue">Pi Insights</span>
             <span class="header-date">Auto-generated report</span>
           </div>
         </header>
         <iframe
           class="pi-sight-iframe"
-          title="Pi Sight"
+          title="Pi Insights"
           srcdoc={insights.piSightContent}
         ></iframe>
       </div>
@@ -585,7 +585,7 @@
                 <span class="orbit-ring"></span>
                 <span class="orbit-dot"></span>
               </div>
-              <span class="gen-label">Loading Pi Sight...</span>
+              <span class="gen-label">Loading Pi Insights...</span>
             </div>
           {:else if insights.piSightError}
             <div class="empty-prompt">

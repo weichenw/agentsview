@@ -433,11 +433,11 @@ func (s *Server) handlePiSight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := filepath.Join(home, ".pi", "agents", "data", "pi-sight", "pi-insight report.html")
+	path := filepath.Join(home, ".pi", "agent", "data", "pi-insights", "report.html")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			writeError(w, http.StatusNotFound, "pi sight report not found at ~/.pi/agents/data/pi-sight/pi-insight report.html")
+			writeError(w, http.StatusNotFound, "pi sight report not found at ~/.pi/agent/data/pi-insights/report.html")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())

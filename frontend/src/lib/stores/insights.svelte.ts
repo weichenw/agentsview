@@ -130,7 +130,7 @@ class InsightsStore {
       this.piSightContent = res.content;
     } catch (e) {
       this.piSightError =
-        e instanceof Error ? e.message : "Failed to load Pi Sight";
+        e instanceof Error ? e.message : "Failed to load Pi Insights";
       this.piSightContent = null;
     } finally {
       this.piSightLoading = false;
