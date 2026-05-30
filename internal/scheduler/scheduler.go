@@ -128,12 +128,17 @@ func (s *Scheduler) heartbeatLoop() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
-	lastCheck := time.Now()
+	lastCheck := time.Now().Round(0)
 	for {
 		select {
 		case <-s.stopCh:
 			return
 		case now := <-ticker.C:
+			// Strip monotonic readings before computing the gap.
+			// On macOS the monotonic clock (mach_absolute_time) pauses
+			// during system sleep, so a plain Sub() under-reports elapsed
+			// wall-clock time and the catch-up code never runs.
+			now = now.Round(0)
 			gap := now.Sub(lastCheck)
 			lastCheck = now // update BEFORE any work
 
@@ -142,6 +147,14 @@ func (s *Scheduler) heartbeatLoop() {
 			}
 
 			log.Printf("scheduler: detected system sleep/wake, gap was %v, checking for missed jobs", gap)
+
+			// Rebuild the cron instance first to discard stale macOS timers
+			// that may have paused or been deferred during system sleep.
+			s.mu.Lock()
+			loc := s.cron.Location()
+			s.mu.Unlock()
+			s.RestartWithLocation(loc)
+
 			s.catchUpMissedRuns(now.Add(-gap), now)
 		}
 	}
